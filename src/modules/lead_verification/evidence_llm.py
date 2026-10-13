@@ -1,15 +1,28 @@
 """Ask the LLM to read all sources for one incident and list every fact with
 the source it came from and an exact quote. The LLM never decides whether a
-fact is verified; verifier.py does that by checking the quotes."""
+fact is verified; verifier.py does that by checking the quotes.
 
-from typing import List, Optional
+One call covers one incident (all of its articles), and the LLM lists every
+person involved - named or not - so several victims of one crash stay separate
+and one victim reported by several articles stays one person.
+"""
+
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from src.core.llm_client import build_llm, llm_model, request_json
 from src.modules.lead_verification.config import MAX_SOURCE_CHARS, MAX_SOURCES_PER_LLM_CALL
 
-# Reuse step 3's OpenAI client and JSON request helper (retries + fallback model).
-from src.modules.article_analysis.llm_extractor import build_llm, llm_model, request_json
+
+STATEMENT_TYPES = (
+    "official_finding",            # an official determination (coroner, final CHP/police report, court)
+    "attributed_to_authorities",   # police/CHP/investigators said it, preliminary
+    "allegation_or_preliminary",   # witnesses, family, unattributed or "believed to"
+    "citation_or_arrest",          # someone was arrested, cited or charged
+    "under_investigation",         # cause/fault explicitly under investigation or unknown
+)
+INDICATES = ("responsibility", "no_responsibility", "undetermined")
 
 
 class Claim(BaseModel):
@@ -27,6 +40,29 @@ class Claim(BaseModel):
         return str(value).strip() or None
 
 
+class FaultStatement(Claim):
+    """What a source says about this person's responsibility, and who says it."""
+
+    statement_type: Optional[Literal[STATEMENT_TYPES]] = None
+    attributed_to: Optional[str] = None
+    indicates: Literal[INDICATES] = "undetermined"
+
+    @field_validator("statement_type", mode="before")
+    @classmethod
+    def known_type(cls, value):
+        return value if value in STATEMENT_TYPES else None
+
+    @field_validator("indicates", mode="before")
+    @classmethod
+    def known_direction(cls, value):
+        return value if value in INDICATES else "undetermined"
+
+    @field_validator("attributed_to", mode="before")
+    @classmethod
+    def attribution_text(cls, value):
+        return str(value).strip() or None if value is not None else None
+
+
 def as_claim_list(value):
     """The model sometimes returns one claim {...} or null instead of [{...}]."""
     if value is None:
@@ -41,19 +77,23 @@ def as_claim_list(value):
 class PersonEvidence(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    @field_validator("full_name", "age", "residence", "outcome", "role", "driver_of_vehicle", "fault", mode="before")
+    @field_validator(
+        "full_name", "age", "residence", "outcome", "role", "driver_of_vehicle", "fault_statements",
+        mode="before",
+    )
     @classmethod
     def claim_lists(cls, value):
         return as_claim_list(value)
 
-    shortlist_name: Optional[str] = None
+    person_ref: Optional[str] = None
+    descriptor: Optional[str] = None
     full_name: List[Claim] = Field(default_factory=list)
     age: List[Claim] = Field(default_factory=list)
     residence: List[Claim] = Field(default_factory=list)
     outcome: List[Claim] = Field(default_factory=list)
     role: List[Claim] = Field(default_factory=list)
     driver_of_vehicle: List[Claim] = Field(default_factory=list)
-    fault: List[Claim] = Field(default_factory=list)
+    fault_statements: List[FaultStatement] = Field(default_factory=list)
 
 
 class IncidentEvidence(BaseModel):
@@ -114,13 +154,11 @@ def _sources_block(sources):
 
 
 def build_prompt(incident, sources):
-    names = "\n".join(f"- {name}" for name in incident["names"])
     return f"""
-You verify facts about one California traffic crash for a records review.
-Use ONLY the numbered sources below. Never use outside knowledge.
-
-SHORTLISTED PEOPLE (killed or seriously injured in this crash):
-{names}
+You extract facts about one reported California traffic crash for a records review.
+The sources below were grouped as reports of the same crash; they may still
+describe different people involved in it. Use ONLY the numbered sources.
+Never use outside knowledge, never guess, never fill gaps.
 
 SOURCES:
 {_sources_block(sources)}
@@ -136,80 +174,90 @@ Return one JSON object:
   "description_sources": ["S1", ...],
   "people": [
     {{
-      "shortlist_name": exactly one name from SHORTLISTED PEOPLE,
+      "person_ref": "P1",
+      "descriptor": string,
       "full_name": [claim],
       "age": [claim],
       "residence": [claim],
       "outcome": [claim],
       "role": [claim],
       "driver_of_vehicle": [claim],
-      "fault": [claim]
+      "fault_statements": [fault_statement]
     }}
   ]
 }}
 
 A claim is {{"value": string, "source": "S#", "quote": string}}.
-Every [claim] field is a JSON LIST of claims, even when there is only one:
-"age": [{{"value": "35", "source": "S1", "quote": "..."}}]. Never a single object.
+A fault_statement is a claim plus
+  "statement_type": one of {", ".join(STATEMENT_TYPES)},
+  "attributed_to": who made the statement, as written (e.g. "CHP", "police",
+                   "a witness"), or null if unattributed,
+  "indicates": "responsibility" | "no_responsibility" | "undetermined".
+Every [claim] field is a JSON LIST, even when there is only one item.
 
 RULES:
-1. Give one claim PER SOURCE that states the fact (several sources can
-   support the same fact). If no source states it, use an empty list [].
+1. Give one claim PER SOURCE that states the fact. If no source states it, [].
 2. "quote" must be copied character-for-character from that source's TEXT,
    short (under 40 words), and must contain the fact. Never paraphrase.
-3. incident_date value: YYYY-MM-DD. If a source says "Friday" or "Oct. 8",
-   resolve it with that source's Published date (the most recent such day
-   on or before publication). If it cannot be resolved, leave it out.
-   A date of an arrest, identification, funeral or fundraiser is not the
-   incident date.
-4. incident_time value: as written (e.g. "4:15 p.m.").
-5. location: where the crash happened (road, cross street, city), as
-   written. Not where someone lived.
-6. full_name: the name exactly as the source spells it.
-7. age: a number only, as stated.
-8. residence: where the person lived, exactly as the source states it
-   (usually a city, e.g. "of Lamont" -> "Lamont"). Only what the source
-   says; never guess.
-9. outcome: "killed", "major_injury" (serious, critical, life-threatening
-   injuries) or "minor_injury" ("non-life-threatening", minor, moderate).
-10. role: driver, passenger, pedestrian, cyclist, motorcyclist or other.
-11. fault, about THIS person only:
-    - "at_fault": a source says this person caused the crash (e.g. ran a
-      red light, was speeding, DUI, crossed into oncoming traffic, lost
-      control, was arrested or cited for the crash).
-    - "not_at_fault": a source says another driver/vehicle caused it or
-      struck this person, or the other driver was arrested/cited/DUI.
-    - A passenger was not driving: do not mark a passenger "at_fault"
-      for how the vehicle was driven.
-    - "not_established": a source says the cause is under investigation
-      or unknown.
-    Quote the sentence that shows it.
-12. crash_type: "single_vehicle" (one vehicle only: went off the road,
-    hit a tree/pole/wall, overturned), "multi_vehicle" (two or more
-    vehicles collided), or "pedestrian_or_cyclist_struck".
-13. other_party: ONLY a vehicle/driver OUTSIDE the shortlisted person's
-    own vehicle (e.g. "the 16-year-old driver of the SUV was arrested").
-    The driver or passengers of the person's own vehicle are NOT the other
-    party. For a single_vehicle crash, other_party must be [].
-14. driver_of_vehicle (passengers only): who was driving the vehicle this
-    person rode in and what happened to them, as written (e.g. "her
-    husband, a 33-year-old Hesperia man, who also died"). [] for drivers,
-    pedestrians and cyclists.
-15. description: 2-3 neutral sentences on what happened, using only facts
-    from the sources. description_sources lists the sources used.
-16. Include every SHORTLISTED person, even if nothing is found (empty lists).
-17. Return JSON only.
+3. incident_date value: YYYY-MM-DD. Resolve "Friday" or "Oct. 8" with that
+   source's Published date (the most recent such day on or before publication).
+   If it cannot be resolved, leave it out. Dates of an arrest, identification,
+   funeral or fundraiser are not the incident date.
+4. incident_time: as written. location: where the crash happened (road, cross
+   street, city), as written; not where anyone lived.
+5. PEOPLE: list every person the sources describe as involved in this crash
+   (killed, injured, uninjured drivers, passengers, pedestrians, cyclists).
+   - One entry per real person. Use person_ref P1, P2, ... in order.
+   - Treat mentions in different sources as the same person only when the
+     name matches, or (no name) the age, role and outcome all match.
+   - Never merge two different names into one person. Two people killed in
+     the same crash are two entries.
+   - Include unnamed people. descriptor is always a short neutral description
+     (e.g. "unnamed 34-year-old motorcyclist"); full_name stays [] when no
+     source names them. Never invent or complete a name.
+6. full_name: exactly as spelled. age: a number only, as stated.
+7. residence: only what a source states (usually a city, e.g. "of Lamont" ->
+   "Lamont"). Never a street address. Never guess.
+8. outcome: "killed", "major_injury" (serious, critical, life-threatening),
+   "minor_injury" (non-life-threatening, minor, moderate), "injured_unknown"
+   (injured, severity not stated) or "uninjured".
+9. role: driver, passenger, pedestrian, cyclist, motorcyclist or other.
+10. fault_statements, about THIS person only. Record only what a source says;
+    do not decide fault yourself.
+    - "responsibility": a source says or alleges THIS person caused or
+      contributed to the crash (e.g. police said he ran a red light).
+    - "no_responsibility": ONLY when a source explicitly says THIS person was
+      not at fault / not responsible / did nothing wrong.
+    - "undetermined": the cause is under investigation, unknown, or the
+      statement does not say who was responsible.
+    - Being struck by another vehicle is NOT "no_responsibility".
+    - Being a passenger is NOT "no_responsibility".
+    - Another person being arrested, cited or charged is NOT
+      "no_responsibility" for this person; record it on that other person
+      as statement_type "citation_or_arrest".
+    - An arrest, citation or charge is "citation_or_arrest", never
+      "official_finding". A preliminary police statement is
+      "attributed_to_authorities", never "official_finding".
+    - "official_finding" only for a stated official determination (e.g. a
+      coroner ruling, a completed investigation's finding, a conviction).
+11. crash_type: "single_vehicle", "multi_vehicle" or "pedestrian_or_cyclist_struck".
+12. other_party: ONLY a vehicle/driver outside the killed or injured person's own
+    vehicle, as written. [] for a single-vehicle crash.
+13. driver_of_vehicle (passengers only): who was driving the vehicle this person
+    rode in, as written. [] otherwise.
+14. description: 2-3 neutral sentences using only facts from the sources; no
+    blame unless attributed (e.g. "CHP said ..."). description_sources lists them.
+15. Return JSON only.
 """
 
 
 def extract_evidence(client, incident, sources):
     """IncidentEvidence for the ranked sources (raises on LLM failure)."""
     prompt = build_prompt(incident, sources)
-    title = incident["people"][0].get("article_title") or incident["incident_key"]
-    data = request_json(client, llm_model(), prompt, title)
+    data = request_json(client, llm_model(), prompt, incident["incident_key"])
     if not isinstance(data, dict):
         raise ValueError("The model response must be a JSON object.")
     return IncidentEvidence.model_validate(data)
 
 
-__all__ = ["build_llm", "llm_model", "extract_evidence", "rank_sources"]
+__all__ = ["build_llm", "llm_model", "extract_evidence", "rank_sources", "STATEMENT_TYPES"]

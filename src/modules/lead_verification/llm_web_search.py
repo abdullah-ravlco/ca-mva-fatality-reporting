@@ -27,21 +27,22 @@ def _clean_url(url):
 
 
 def _prompt(incident, missing):
+    """incident["people"]: [{display_name, age, outcome}]; incident["known"]: what the sources say so far."""
     people = []
     for person in incident["people"]:
-        bits = [person["person_name"]]
-        if person.get("person_age"):
-            bits.append(f"age {person['person_age']}")
-        bits.append(person.get("outcome_category") or "killed")
+        bits = [person["display_name"]]
+        if person.get("age"):
+            bits.append(f"age {person['age']}")
+        bits.append(person.get("outcome") or "outcome unknown")
         people.append(", ".join(str(b) for b in bits))
-    first = incident["people"][0]
+    known = incident.get("known") or {}
     return f"""Find published news articles and official releases (coroner, CHP,
 police, sheriff, city) about this California traffic crash.
 
-People: {"; ".join(people)}
-Crash date (may be unknown): {first.get("incident_date") or "unknown"}
-Crash location (may be unknown): {first.get("accident_location") or "unknown"}
-Known headline: {first.get("article_title")}
+People: {"; ".join(people) or "not yet identified"}
+Crash date (may be unknown): {known.get("incident_date") or "unknown"}
+Crash location (may be unknown): {known.get("location") or "unknown"}
+Known headline: {known.get("headline")}
 
 We still need: {", ".join(missing)}.
 
