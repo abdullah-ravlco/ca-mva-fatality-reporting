@@ -1,0 +1,11 @@
+.venv
+.env
+__pycache__/
+*.pyc
+
+# Module-scoped runtime data: keep the directory skeleton, ignore its contents.
+data/**
+!data/**/
+!data/**/.gitkeep
+
+logs/
