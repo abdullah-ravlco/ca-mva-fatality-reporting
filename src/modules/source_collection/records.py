@@ -2,6 +2,7 @@
 """Builders for consistent source records, and the shared status rules."""
 
 from src.core.date_utils import is_recent, iso, parse_date
+from src.modules.source_collection.incident_dates import NOTE_EARLIER
 from src.modules.source_collection.location import CALIFORNIA_CONFIRMED, OUTSIDE_CALIFORNIA
 
 # Record statuses
@@ -57,12 +58,19 @@ def make_record(
         "published_local_date": None,     # publication date in the publisher's timezone
         "publisher_timezone": None,
         "incident_date_note": None,       # why no crash date was accepted, if relevant
+        "incident_date_note_type": None,  # earlier | conflicting (see incident_dates.py)
         "page_extraction": None,          # see article_text.py (e.g. blocked, fetched)
         "fetch_error": None,
+        "guid": None,                     # feed item id (Google News article id, WordPress guid, ...)
+        "query": None,                    # search query of the feed that found this record
+        "discovered_by_queries": [],      # every search query that returned this article
+        "discovered_by_sources": [],      # every feed/source that returned this article
         "collected_at": iso(collected_at),
     }
 
     record.update(fields)
+    if not record["discovered_by_sources"]:
+        record["discovered_by_sources"] = [source_name]
     return record
 
 
@@ -106,7 +114,8 @@ def refresh_news_status(record, now, hours):
     """
     if record.get("source_type") not in ("rss", "google_news_rss"):
         return record
-    incident_date = None if record.get("incident_date_note") else parse_date(record.get("incident_date"))
+    says_earlier = record.get("incident_date_note_type") == NOTE_EARLIER
+    incident_date = None if says_earlier else parse_date(record.get("incident_date"))
     status, reasons = news_status(incident_date, record.get("location_status"), now, hours)
     extra = [r for r in record.get("review_reasons") or [] if r not in BASE_REASONS]
     record["status"] = status
