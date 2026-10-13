@@ -4,6 +4,7 @@ feedparser
 trafilatura
 lxml_html_clean
 curl_cffi
-langchain
-langchain-xai
+openai
+pydantic
 python-dotenv
+pytest
