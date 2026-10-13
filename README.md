@@ -17,7 +17,6 @@ cp .env.example .env   # then set OPENAI_API_KEY
 |---|---|---|
 | `OPENAI_API_KEY` | for `lead_verification` | — |
 | `OPENAI_MODEL` | no | `gpt-4.1-mini` |
-| `OPENAI_FALLBACK_MODEL` | no | `gpt-4.1` |
 
 ## Running
 
