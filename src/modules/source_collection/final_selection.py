@@ -10,6 +10,7 @@ discard   - known not to be needed (old crash, not a road death)
 
 from collections import Counter
 
+from src.modules.source_collection.incident_dates import NOTE_EARLIER
 from src.modules.source_collection.records import (
     DATE_CONFLICT_REVIEW, DATE_UNKNOWN, INCIDENT_DATE_UNVERIFIED, INCIDENT_OUTSIDE_WINDOW,
     RECENT, RECENT_LISTING_DATE, RECENT_LISTING_ONLY, REVIEW_LOCATION,
@@ -45,8 +46,9 @@ def classify(record):
         return CONSIDER, "crash date in story text is inside the window"
     if status == INCIDENT_OUTSIDE_WINDOW:
         return DISCARD, "crash happened before the window"
-    if status == INCIDENT_DATE_UNVERIFIED and record.get("incident_date_note"):
+    if status == INCIDENT_DATE_UNVERIFIED and record.get("incident_date_note_type") == NOTE_EARLIER:
         # e.g. "arrest made in February crash": the story itself says it's old.
+        # Conflicting dates in the story are uncertain, not old: those go to review.
         return DISCARD, "story says the crash happened earlier"
     if status in (INCIDENT_DATE_UNVERIFIED, REVIEW_LOCATION, DATE_UNKNOWN, DATE_CONFLICT_REVIEW):
         return REVIEW, ", ".join(record.get("review_reasons") or [status])
