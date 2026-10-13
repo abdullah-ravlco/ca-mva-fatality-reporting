@@ -1,34 +1,42 @@
 
-"""Write the two output files.
+"""Write the stage output files (to data/source_collection/ and data/runs/<run_id>/).
 
 fetched_sources.json - everything that was fetched: every page/feed requested (with
                        errors), every item skipped by a filter (with reason), and every
                        collected record with its selection decision.
+raw_feed_items.json  - every feed item exactly as the feed gave it, before any filter,
+                       with the feed and search query that returned it.
 sources_to_open.json - only the cases to open, one entry per crash:
                        "confirmed" (verified from metadata) and "doubtful"
                        (not verifiable from metadata, but not known to be unneeded).
 """
 
-import json
 from collections import Counter
 
-from config.settings import module_data_dir
+from src.core.outputs import write_stage_json
 
 
-DATA_DIR = module_data_dir("source_collection")
-FETCHED_FILE = DATA_DIR / "fetched_sources.json"
-TO_OPEN_FILE = DATA_DIR / "sources_to_open.json"
+MODULE = "source_collection"
+FETCHED_FILE = "fetched_sources.json"
+RAW_ITEMS_FILE = "raw_feed_items.json"
+TO_OPEN_FILE = "sources_to_open.json"
 
 
-def _write(path, data):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as file:
-        json.dump(data, file, indent=2, ensure_ascii=False)
+def write_raw_feed_items(run_at, sources):
+    """Move each source's raw_items out of the source results into their own file."""
+    items = []
+    for source in sources:
+        items.extend(source.pop("raw_items", None) or [])
+    return write_stage_json(MODULE, RAW_ITEMS_FILE, {
+        "run_at": run_at,
+        "total_items": len(items),
+        "items": items,
+    })
 
 
 def write_fetched_sources(run_at, lookback_hours, sources, records, discarded, duplicates_removed):
     buckets = Counter(record.get("selection_bucket") for record in records)
-    _write(FETCHED_FILE, {
+    return write_stage_json(MODULE, FETCHED_FILE, {
         "run_at": run_at,
         "lookback_hours": lookback_hours,
         "sources": sources,
@@ -44,11 +52,10 @@ def write_fetched_sources(run_at, lookback_hours, sources, records, discarded, d
             "discarded_by_reason": discarded,
         },
     })
-    return FETCHED_FILE
 
 
 def write_sources_to_open(run_at, lookback_hours, confirmed, doubtful, dropped):
-    _write(TO_OPEN_FILE, {
+    return write_stage_json(MODULE, TO_OPEN_FILE, {
         "run_at": run_at,
         "lookback_hours": lookback_hours,
         "confirmed": confirmed,
@@ -61,4 +68,3 @@ def write_sources_to_open(run_at, lookback_hours, confirmed, doubtful, dropped):
             "doubtful_dropped_by_reason": dropped,
         },
     })
-    return TO_OPEN_FILE

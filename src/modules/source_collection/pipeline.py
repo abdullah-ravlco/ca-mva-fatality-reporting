@@ -6,10 +6,12 @@ Writes two files in data/source_collection/:
   sources_to_open.json  - one entry per crash to open: confirmed and doubtful
 """
 
+import logging
 from collections import Counter
 
 from src.core.date_utils import iso, utc_now
 from src.core.http_client import HttpClient
+from src.core.logger import configure_logging
 from src.modules.source_collection.case_grouping import build_cases
 from src.modules.source_collection.collectors.base import collect_from_source
 from src.modules.source_collection.collectors.riverside_coroner import collect_riverside_coroner
@@ -17,9 +19,15 @@ from src.modules.source_collection.collectors.rss import collect_rss_sources
 from src.modules.source_collection.collectors.sb_coroner import collect_sb_coroner
 from src.modules.source_collection.deduplication import canonical_url, deduplicate_records
 from src.modules.source_collection.final_selection import select_records
-from src.modules.source_collection.output_files import write_fetched_sources, write_sources_to_open
+from src.modules.source_collection.output_files import (
+    write_fetched_sources,
+    write_raw_feed_items,
+    write_sources_to_open,
+)
 from src.modules.source_collection.records import make_source_result, refresh_news_status
 from src.modules.source_collection.sources import LOOKBACK_HOURS, SOURCES
+
+logger = logging.getLogger(__name__)
 
 
 COLLECTORS = {
@@ -110,7 +118,7 @@ def label_sources(sources_checked, records):
 def collect_official_sources(client, now):
     records, checked = [], []
     for source in SOURCES:
-        print(f"Collecting: {source['name']}")
+        logger.info("Collecting: %s", source["name"])
         try:
             source_records, result = COLLECTORS[source["type"]](source, client, now, LOOKBACK_HOURS)
         except Exception as exc:  # one broken parser must not stop the run
@@ -118,7 +126,7 @@ def collect_official_sources(client, now):
             result = make_source_result(source["name"], source["url"], now, source["type"])
             result["error"] = f"collector crashed: {type(exc).__name__}: {exc}"
 
-        print(f"  {result['candidate_count']} candidates" + (f" (error: {result['error']})" if result["error"] else ""))
+        logger.info("  %s candidates%s", result["candidate_count"], f" (error: {result['error']})" if result["error"] else "")
         records.extend(source_records)
         checked.append(result)
     return records, checked
@@ -133,7 +141,7 @@ def main():
 
     # Step 2: publisher RSS and Google News RSS feeds.
     rss_records, rss_checked = collect_rss_sources(client, now, LOOKBACK_HOURS)
-    print(f"RSS records collected: {len(rss_records)}")
+    logger.info("RSS records collected: %s", len(rss_records))
     all_records.extend(rss_records)
     sources_checked.extend(rss_checked)
 
@@ -154,23 +162,31 @@ def main():
     # rest of each case's URLs as alternatives in "sources".
     prioritize_case_urls(confirmed + doubtful, unique_records)
 
-    # Step 6: write both files.
+    # Step 6: write the output files.
     run_at = iso(now)
+    raw_file = write_raw_feed_items(run_at, sources_checked)
     fetched_file = write_fetched_sources(
         run_at, LOOKBACK_HOURS, label_sources(sources_checked, unique_records),
         unique_records, discarded, duplicates_removed,
     )
     to_open_file = write_sources_to_open(run_at, LOOKBACK_HOURS, confirmed, doubtful, dropped)
 
-    print("\nCollection complete.")
-    print(f"Records collected: {len(all_records)} (duplicates merged: {duplicates_removed})")
-    print(f"Records discarded: {sum(discarded.values())} {discarded}")
-    print(f"Cases to open - confirmed: {len(confirmed)}, doubtful: {len(doubtful)}")
+    logger.info("Collection complete.")
+    logger.info("Records collected: %s (duplicates merged: %s)", len(all_records), duplicates_removed)
+    logger.info("Records discarded: %s %s", sum(discarded.values()), discarded)
+    logger.info("Cases to open - confirmed: %s, doubtful: %s", len(confirmed), len(doubtful))
     if dropped:
-        print(f"Doubtful cases dropped: {dropped}")
-    print(f"Fetched sources:  {fetched_file}")
-    print(f"Sources to open:  {to_open_file}")
+        logger.info("Doubtful cases dropped: %s", dropped)
+    logger.info("Raw feed items:   %s", raw_file)
+    logger.info("Fetched sources:  %s", fetched_file)
+    logger.info("Sources to open:  %s", to_open_file)
+
+    if all(source.get("result") == "failed" for source in sources_checked):
+        logger.error("Every source failed; nothing was collected.")
+        return False
+    return True
 
 
 if __name__ == "__main__":
+    configure_logging()
     main()

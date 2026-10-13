@@ -78,6 +78,7 @@ def google_news_feeds(hours=LOOKBACK_HOURS):
                 query=quote_plus(f"{query} when:{days}d")
             ),
             "kind": "google_news_rss",
+            "query": query,
         }
         for query in GOOGLE_NEWS_QUERIES
     ]
