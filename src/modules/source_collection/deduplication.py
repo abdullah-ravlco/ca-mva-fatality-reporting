@@ -1,11 +1,18 @@
 
-"""Remove duplicate article records from RSS and Google News sources.
+"""Remove duplicate ARTICLES (the same story found more than once).
 
 Order of checks:
-1. Canonical URL (tracking parameters and fragments removed) - exact duplicates.
-2. Similar headlines across publishers - only when the incident details found so far
-   (crash date, county, city) do not contradict each other.
-Merged duplicates are listed in "also_reported_by" instead of being silently dropped.
+1. Canonical URL (tracking parameters and fragments removed) - exact duplicates, e.g.
+   the same Google News item returned by several queries.
+2. Similar headlines from the SAME publisher - e.g. the feed copy and the Google News
+   copy of one story - only when the incident details found so far (crash date,
+   county, city) do not contradict each other.
+
+Different publishers reporting the same crash are NOT merged here: that is
+incident-level grouping (case_grouping.py), which keeps every article.
+
+Every query and source that found an article is kept in discovered_by_queries /
+discovered_by_sources; other URLs of a merged duplicate are listed in "also_reported_by".
 """
 
 from datetime import timedelta
@@ -14,6 +21,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from src.core.date_utils import parse_date
 from src.modules.source_collection.filters import normalize_title
+from src.modules.source_collection.incident_dates import NOTE_EARLIER
 
 
 TRACKING_PARAMS = {
@@ -130,6 +138,23 @@ def is_news_record(record):
     return record.get("source_type") in {"rss", "google_news_rss"}
 
 
+def publisher_key(record):
+    """Normalized publisher name, or the publisher's host when no name is known."""
+    name = (record.get("publisher") or "").strip().lower()
+    if name:
+        return name
+    for field in ("publisher_url", "url"):
+        host = urlsplit(record.get(field) or "").netloc.lower()
+        if host and host != "news.google.com":
+            return host[4:] if host.startswith("www.") else host
+    return None
+
+
+def same_publisher(record_a, record_b):
+    key_a, key_b = publisher_key(record_a), publisher_key(record_b)
+    return key_a is not None and key_a == key_b
+
+
 def record_quality(record):
     """
     Prefer a direct publisher URL over a Google News redirect, then records
@@ -150,14 +175,29 @@ def record_quality(record):
 def _reference(record):
     return {
         "url": record.get("url"),
+        "title": record.get("title"),
+        "description": record.get("description"),
         "publisher": record.get("publisher"),
         "source_name": record.get("source_name"),
         "published_at": record.get("published_at"),
+        "guid": record.get("guid"),
+        "discovered_by_queries": list(record.get("discovered_by_queries") or []),
     }
+
+
+def _union(kept, dropped, field):
+    values = kept.setdefault(field, [])
+    for value in dropped.get(field) or []:
+        if value not in values:
+            values.append(value)
 
 
 def merge_into(kept, dropped):
     """Record the dropped duplicate on the kept record and fill missing details from it."""
+    # Provenance is kept even when both copies have the same URL.
+    _union(kept, dropped, "discovered_by_queries")
+    _union(kept, dropped, "discovered_by_sources")
+
     references = kept.setdefault("also_reported_by", [])
     known_urls = {kept.get("url")} | {ref.get("url") for ref in references}
 
@@ -168,7 +208,7 @@ def merge_into(kept, dropped):
 
     for field in FILLABLE_FIELDS:
         # Don't give a date to a story whose own text says the crash happened earlier.
-        if field.startswith("incident_date") and kept.get("incident_date_note"):
+        if field.startswith("incident_date") and kept.get("incident_date_note_type") == NOTE_EARLIER:
             continue
         if kept.get(field) in (None, "") and dropped.get(field) not in (None, ""):
             kept[field] = dropped[field]
@@ -181,10 +221,10 @@ def merge_into(kept, dropped):
 
 def deduplicate_records(records):
     """
-    Remove exact URL duplicates and likely duplicate news headlines.
+    Remove exact URL duplicates and near-duplicate copies from the same publisher.
 
-    This is a heuristic: similar headlines are not proof that two stories
-    describe the same incident. Review the results before downstream use.
+    Similar headlines from different publishers are left alone: they are separate
+    articles, grouped into one incident later by case_grouping.py.
     """
     unique = []
     seen_urls = {}
@@ -205,13 +245,17 @@ def deduplicate_records(records):
 
         duplicate_index = None
 
-        # Compare news records across publishers, not unrelated official
-        # records such as distinct coroner case entries.
+        # Near-duplicates: news records from the same publisher only (not official
+        # records such as distinct coroner case entries).
         if is_news_record(record):
             for index in news_indexes:
                 existing = unique[index]
 
-                if similar_headlines(record.get("title"), existing.get("title")) and not details_conflict(record, existing):
+                if (
+                    same_publisher(record, existing)
+                    and similar_headlines(record.get("title"), existing.get("title"))
+                    and not details_conflict(record, existing)
+                ):
                     duplicate_index = index
                     break
 
