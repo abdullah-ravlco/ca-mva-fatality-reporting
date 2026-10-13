@@ -6,23 +6,39 @@ otherwise the claim is dropped. Then each field gets a status:
   single_source  - only one site states it
   conflict       - sources disagree (all values are kept)
   missing        - no source states it (value stays null; nothing is guessed)
+
+Fault is reported as what the sources say, by statement type, and is never
+inferred: being struck, being a passenger, or another driver's arrest does not
+make a person "not at fault". Fault never affects an incident's evidence status
+or whether it is in scope.
 """
 
+import math
 import re
 import unicodedata
-from datetime import date
+from datetime import datetime
 from difflib import SequenceMatcher
 
-from src.modules.lead_verification.config import MAX_DAYS
+from src.core.date_utils import PACIFIC
+from src.modules.lead_verification.evidence_llm import PersonEvidence
 from src.modules.lead_verification.incidents import name_tokens
+from src.modules.source_collection.location import CALIFORNIA_CONFIRMED, OUTSIDE_CALIFORNIA, detect_location
+from src.modules.source_collection.sources import LOOKBACK_HOURS
 
 
 # Fields where different values are a real disagreement.
 STRICT_FIELDS = {"incident_date", "age", "outcome", "full_name", "role", "crash_type"}
-FAULT_VALUES = ("at_fault", "not_at_fault", "not_established")
 MIN_FUZZY_QUOTE_CHARS = 25
 FUZZY_MATCH_RATIO = 0.9
 DATE_TOLERANCE_DAYS = 1
+
+# fault summary statuses
+EXPLICITLY_NOT_AT_FAULT = "explicitly_reported_not_at_fault"
+OFFICIALLY_RESPONSIBLE = "officially_found_responsible"
+RESPONSIBILITY_ALLEGED = "responsibility_alleged"
+UNDER_INVESTIGATION = "under_investigation"
+CONFLICTING = "conflicting"
+UNDETERMINED = "undetermined"
 
 
 # --------------------------------------------------
@@ -47,11 +63,15 @@ def quote_in_text(quote, text):
     return match.size >= FUZZY_MATCH_RATIO * len(q)
 
 
+def _source_for(claim, sources_by_id):
+    return sources_by_id.get((claim.source or "").strip("[] ").upper())
+
+
 def check_claims(claims, sources_by_id):
     """(valid claims with source details, number rejected)."""
     valid, rejected = [], 0
     for claim in claims or []:
-        source = sources_by_id.get((claim.source or "").strip("[] ").upper())
+        source = _source_for(claim, sources_by_id)
         if not claim.value or not claim.quote or source is None or not quote_in_text(claim.quote, source["text"]):
             rejected += 1
             continue
@@ -76,7 +96,7 @@ def value_key(field, value):
     value = (value or "").strip()
     if field == "incident_date":
         try:
-            return date.fromisoformat(value[:10])
+            return datetime.strptime(value[:10], "%Y-%m-%d").date()
         except ValueError:
             return None
     if field == "age":
@@ -85,7 +105,7 @@ def value_key(field, value):
     if field == "full_name":
         tokens = name_tokens(value)
         return (tokens[0], tokens[-1]) if tokens else None
-    if field in ("outcome", "role", "fault", "crash_type"):
+    if field in ("outcome", "role", "crash_type"):
         return value.lower().replace(" ", "_")
     return _normalize(value) or None
 
@@ -157,43 +177,65 @@ def field_result(field, claims, sources_by_id):
     return result
 
 
-def fault_result(claims, sources_by_id):
-    """at_fault wins over not_at_fault wins over not_established; disagreement is a conflict."""
-    valid, rejected = check_claims(claims, sources_by_id)
-    valid = [c for c in valid if value_key("fault", c["value"]) in FAULT_VALUES]
-    result = {"value": None, "status": "missing", "evidence": [], "rejected_claims": rejected}
-    if not valid:
-        return result
+# --------------------------------------------------
+# Fault: what the sources say, never inferred
+# --------------------------------------------------
 
-    by_value = {}
-    for claim in valid:
-        by_value.setdefault(value_key("fault", claim["value"]), []).append(claim)
-    for value in FAULT_VALUES:
-        if value in by_value:
-            claims_for_value = by_value[value]
-            break
+def check_statements(statements, sources_by_id):
+    """(quote-checked fault statements, number rejected)."""
+    valid, rejected = [], 0
+    for statement in statements or []:
+        source = _source_for(statement, sources_by_id)
+        if not statement.quote or source is None or not quote_in_text(statement.quote, source["text"]):
+            rejected += 1
+            continue
+        valid.append({
+            "statement": statement.value or statement.quote,
+            "quote": statement.quote,
+            "statement_type": statement.statement_type,
+            "attributed_to": statement.attributed_to,
+            "indicates": statement.indicates,
+            "source_url": source["url"],
+            "official": source["official"],
+        })
+    return valid, rejected
 
-    result.update(value=value, evidence=_evidence(claims_for_value), status=status_for(claims_for_value))
-    if value == "at_fault" and "not_at_fault" in by_value:
-        result["status"] = "conflict"
-        result["alternatives"] = [{"value": "not_at_fault", "evidence": _evidence(by_value["not_at_fault"])}]
-    return result
 
+def fault_summary(statements, sources_by_id):
+    """Summary of what the sources say about one person's responsibility.
 
-def passenger_fault(fault, role):
-    """A passenger was not driving, so cannot have caused the crash by driving.
-
-    Applied only when the sources (quote-checked) show the person was a
-    passenger and no source says this person was at fault.
+    explicitly_reported_not_at_fault - a source says so about this person, and no
+                                       source says the opposite
+    officially_found_responsible     - an official finding of responsibility
+    responsibility_alleged           - responsibility attributed to authorities,
+                                       alleged, or an arrest/citation of this person
+    conflicting                      - sources point both ways
+    under_investigation              - sources say the cause is under investigation
+    undetermined                     - nothing stated (the default)
     """
-    if role["value"] != "passenger" or role["status"] == "conflict" or fault["value"] == "at_fault":
-        return fault
+    valid, rejected = check_statements(statements, sources_by_id)
+    responsibility = [s for s in valid if s["indicates"] == "responsibility"]
+    no_responsibility = [s for s in valid if s["indicates"] == "no_responsibility"]
+    citations = [s for s in valid if s["statement_type"] == "citation_or_arrest"]
+
+    if (responsibility or citations) and no_responsibility:
+        status = CONFLICTING
+    elif no_responsibility:
+        status = EXPLICITLY_NOT_AT_FAULT
+    elif any(s["statement_type"] == "official_finding" for s in responsibility):
+        status = OFFICIALLY_RESPONSIBLE
+    elif responsibility or citations:
+        status = RESPONSIBILITY_ALLEGED
+    elif any(s["statement_type"] == "under_investigation" for s in valid):
+        status = UNDER_INVESTIGATION
+    else:
+        status = UNDETERMINED
+
     return {
-        "value": "not_at_fault",
-        "status": role["status"],
-        "basis": "passenger: was not driving the vehicle",
-        "evidence": role["evidence"] + fault.get("evidence", []),
-        "rejected_claims": fault.get("rejected_claims", 0),
+        "status": status,
+        "statements": valid,
+        "rejected_statements": rejected,
+        "note": "Reported statements only; not a legal determination of fault.",
     }
 
 
@@ -209,68 +251,131 @@ def other_party_summary(crash_type, other_party):
 # People
 # --------------------------------------------------
 
-def match_person_evidence(person, evidence):
-    tokens = name_tokens(person["person_name"])
-    for item in evidence.people:
-        other = name_tokens(item.shortlist_name or "")
-        if other and tokens and other[0] == tokens[0] and other[-1] == tokens[-1]:
-            return item
-    for item in evidence.people:
-        for claim in item.full_name:
-            other = name_tokens(claim.value or "")
-            if other and tokens and other[0] == tokens[0] and other[-1] == tokens[-1]:
-                return item
-    return None
+PERSON_CLAIM_FIELDS = ("full_name", "age", "residence", "outcome", "role", "driver_of_vehicle", "fault_statements")
 
 
-def lead_status(person, fields, today):
-    """(verification_status, reasons)."""
-    reasons = []
+def merge_same_named(people, sources_by_id):
+    """Merge LLM entries whose verified names are the same person (first + last name).
 
-    fault = fields["fault"]
-    if fault["value"] == "at_fault" and fault["status"] != "conflict":
-        return "rejected", ["Sources say this person caused the crash."]
+    Returns [(PersonEvidence, merge_note)].
+    """
+    groups, order = {}, []
+    for index, person in enumerate(people):
+        name = field_result("full_name", person.full_name, sources_by_id)
+        key = value_key("full_name", name["value"]) if name["value"] else ("unnamed", index)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(person)
 
-    outcome = fields["outcome"]
-    if outcome["value"] == "minor_injury" and outcome["status"] != "conflict":
-        return "rejected", ["Sources describe only minor injuries."]
-
-    incident_date = fields["incident_date"]
-    if incident_date["value"] and incident_date["status"] != "conflict":
-        age_days = (today - date.fromisoformat(incident_date["value"])).days
-        if age_days > MAX_DAYS:
-            return "rejected", [f"Crash was {age_days} days ago (more than {MAX_DAYS})."]
-
-    for field in ("full_name", "incident_date", "location"):
-        status = fields[field]["status"]
-        if status == "missing":
-            reasons.append(f"{field}: not found in any source")
-        elif status != "confirmed":
-            reasons.append(f"{field}: {status}")
-
-    if fault["value"] != "not_at_fault":
-        reasons.append(
-            "fault: conflicting reports" if fault["status"] == "conflict"
-            else "fault: sources do not say who caused the crash" if fault["value"] in (None, "not_established")
-            else f"fault: {fault['value']}"
+    merged = []
+    for key in order:
+        members = groups[key]
+        if len(members) == 1:
+            merged.append((members[0], None))
+            continue
+        combined = {field: [c for m in members for c in getattr(m, field)] for field in PERSON_CLAIM_FIELDS}
+        person = PersonEvidence(
+            person_ref=members[0].person_ref,
+            descriptor=members[0].descriptor,
+            **{field: [c.model_dump() for c in claims] for field, claims in combined.items()},
         )
-    elif fault["status"] != "confirmed":
-        reasons.append("fault: not_at_fault from a single source")
-
-    for field in ("age", "residence"):
-        if fields[field]["status"] == "missing":
-            reasons.append(f"{field}: not found in any source")
-
-    blocking = [r for r in reasons if not r.startswith(("age:", "residence:", "fault: not_at_fault from"))]
-    return ("verified" if not blocking else "partially_verified"), reasons
+        refs = ", ".join(m.person_ref or "?" for m in members)
+        merged.append((person, f"entries {refs} name the same person and were merged"))
+    return merged
 
 
-FAULT_SUMMARY = {"at_fault": "yes", "not_at_fault": "no", "not_established": "not_established"}
+def person_record(person, merge_note, sources_by_id):
+    fields = {
+        field: field_result(field, getattr(person, field), sources_by_id)
+        for field in ("full_name", "age", "residence", "outcome", "role", "driver_of_vehicle")
+    }
+    fault = fault_summary(person.fault_statements, sources_by_id)
+    named = fields["full_name"]["value"] is not None
+    return {
+        "person_ref": person.person_ref,
+        "display_name": fields["full_name"]["value"] or person.descriptor or "unnamed person",
+        "name_status": "named" if named else "unnamed",
+        "descriptor": person.descriptor,
+        "summary": {
+            "name": fields["full_name"]["value"],
+            "age": fields["age"]["value"],
+            "residence": fields["residence"]["value"],
+            "outcome": fields["outcome"]["value"],
+            "role": fields["role"]["value"],
+            "driver_of_vehicle": fields["driver_of_vehicle"]["value"] if fields["role"]["value"] == "passenger" else None,
+            "fault_status": fault["status"],
+        },
+        "field_status": {name: field["status"] for name, field in fields.items()},
+        "evidence": fields,
+        "fault": fault,
+        "merge_note": merge_note,
+    }
+
+
+# --------------------------------------------------
+# Incident scope and evidence status (independent of fault)
+# --------------------------------------------------
+
+def _today():
+    return datetime.now(PACIFIC).date()
+
+
+def in_window(incident_date, today, hours=LOOKBACK_HOURS):
+    """(True/False/None, reason) for the verified crash date."""
+    if incident_date["value"] is None:
+        return None, "crash date not established"
+    if incident_date["status"] == "conflict":
+        return None, "sources give conflicting crash dates"
+    days = (today - value_key("incident_date", incident_date["value"])).days
+    window_days = math.ceil(hours / 24)
+    if days < 0:
+        return False, f"crash date {incident_date['value']} is after today"
+    if days > window_days:
+        return False, f"crash was {days} days ago (window: {window_days} days)"
+    return True, None
+
+
+def in_california(location, incident):
+    """(True/False/None, reason) from the verified location, then the articles' own checks."""
+    if location["value"]:
+        status = detect_location(location["value"])["location_status"]
+        if status == CALIFORNIA_CONFIRMED:
+            return True, None
+        if status == OUTSIDE_CALIFORNIA:
+            return False, f"location is outside California: {location['value']}"
+    articles = incident.get("articles") or []
+    if any(a.get("location_status") == CALIFORNIA_CONFIRMED for a in articles):
+        return True, None
+    return None, "California location not confirmed"
+
+
+def fatality_established(people):
+    """(True/False/None, reason): does any quote-checked source report a death?"""
+    killed = [p for p in people if p["summary"]["outcome"] == "killed"]
+    if killed:
+        return True, None
+    if any(p["field_status"]["outcome"] != "missing" for p in people):
+        return False, "no source reports that anyone died"
+    return None, "outcome of the people involved not stated"
+
+
+def evidence_status(shared, people):
+    killed = [p for p in people if p["summary"]["outcome"] == "killed"]
+    statuses = [shared["incident_date"]["status"], shared["location"]["status"]]
+    statuses += [p["field_status"]["outcome"] for p in killed]
+    if "conflict" in statuses:
+        return "conflicting"
+    if not killed or "missing" in statuses:
+        return "insufficient"
+    if all(status == "confirmed" for status in statuses):
+        return "corroborated"
+    return "single_source"
 
 
 def verify_incident(incident, evidence, sources, today=None):
-    """One verified-lead dict per shortlisted person in the incident."""
-    today = today or date.today()
+    """One analysed incident: shared fields, every person, scope and evidence status."""
+    today = today or _today()
     sources_by_id = {source["id"]: source for source in sources}
 
     shared = {
@@ -285,46 +390,35 @@ def verify_incident(incident, evidence, sources, today=None):
         for s in evidence.description_sources
         if s.strip("[] ").upper() in sources_by_id
     ]
-    description = evidence.description if description_urls else None
 
-    leads = []
-    for person in incident["people"]:
-        person_evidence = match_person_evidence(person, evidence)
-        get = (lambda name: getattr(person_evidence, name)) if person_evidence else (lambda name: [])
+    people = [person_record(p, note, sources_by_id) for p, note in merge_same_named(evidence.people, sources_by_id)]
 
-        fields = dict(shared)
-        fields["full_name"] = field_result("full_name", get("full_name"), sources_by_id)
-        fields["age"] = field_result("age", get("age"), sources_by_id)
-        fields["residence"] = field_result("residence", get("residence"), sources_by_id)
-        fields["outcome"] = field_result("outcome", get("outcome"), sources_by_id)
-        fields["role"] = field_result("role", get("role"), sources_by_id)
-        fields["driver_of_vehicle"] = field_result("driver_of_vehicle", get("driver_of_vehicle"), sources_by_id)
-        fields["fault"] = passenger_fault(fault_result(get("fault"), sources_by_id), fields["role"])
+    checks = {
+        "in_window": in_window(shared["incident_date"], today),
+        "in_california": in_california(shared["location"], incident),
+        "fatality_established": fatality_established(people),
+    }
+    scope_reasons = [reason for value, reason in checks.values() if value is False]
+    open_questions = [reason for value, reason in checks.values() if value is None]
 
-        status, reasons = lead_status(person, fields, today)
-        leads.append({
-            "verification_status": status,
-            "status_reasons": reasons,
-            "summary": {
-                "name": fields["full_name"]["value"] or person["person_name"],
-                "age": fields["age"]["value"],
-                "residence": fields["residence"]["value"],
-                "outcome": fields["outcome"]["value"],
-                "role": fields["role"]["value"],
-                "incident_date": fields["incident_date"]["value"],
-                "incident_time": fields["incident_time"]["value"],
-                "location": fields["location"]["value"],
-                "at_fault": FAULT_SUMMARY.get(fields["fault"]["value"]),
-                "at_fault_basis": fields["fault"].get("basis"),
-                "crash_type": fields["crash_type"]["value"],
-                "driver_of_vehicle": (
-                    fields["driver_of_vehicle"]["value"] if fields["role"]["value"] == "passenger" else None
-                ),
-                "other_party": other_party_summary(fields["crash_type"], fields["other_party"]),
-                "description": description,
-            },
-            "field_status": {name: field["status"] for name, field in fields.items()},
-            "evidence": fields,
-            "description_sources": description_urls,
-        })
-    return leads
+    return {
+        "in_scope": not scope_reasons,
+        "scope_reasons": scope_reasons,
+        "scope_checks": {name: value for name, (value, _) in checks.items()},
+        "evidence_status": evidence_status(shared, people),
+        "open_questions": open_questions,
+        "summary": {
+            "incident_date": shared["incident_date"]["value"],
+            "incident_time": shared["incident_time"]["value"],
+            "location": shared["location"]["value"],
+            "crash_type": shared["crash_type"]["value"],
+            "other_party": other_party_summary(shared["crash_type"], shared["other_party"]),
+            "people_killed": sum(1 for p in people if p["summary"]["outcome"] == "killed"),
+            "people_listed": len(people),
+            "description": evidence.description if description_urls else None,
+        },
+        "field_status": {name: field["status"] for name, field in shared.items()},
+        "evidence": shared,
+        "description_sources": description_urls,
+        "people": people,
+    }

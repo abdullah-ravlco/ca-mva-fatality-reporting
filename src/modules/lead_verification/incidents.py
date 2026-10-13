@@ -1,26 +1,15 @@
-"""Load the shortlist and group shortlisted people into incidents (one crash each)."""
+"""Load the grouped incidents (incident_grouping output) and their already-fetched articles."""
 
 import hashlib
-import json
 import re
 import unicodedata
 from urllib.parse import urlsplit
 
-from src.modules.lead_verification.config import EXTRACTED_TEXT_FILE, LAW_FIRM_HOST_RE, OFFICIAL_HOST_RE, SHORTLIST_FILE
+from src.core.outputs import read_json
+from src.modules.lead_verification.config import INCIDENTS_FILE, LAW_FIRM_HOST_RE, OFFICIAL_HOST_RE
 
 
 NAME_TITLE_RE = re.compile(r"^(officer|deputy|sgt\.?|sergeant|dr\.?|mr\.?|mrs\.?|ms\.?)\s+", re.I)
-
-
-def read_json(path, default=None):
-    """File contents, or default when the file is missing, empty or not valid JSON."""
-    if not path.exists():
-        return default
-    try:
-        text = path.read_text(encoding="utf-8")
-        return json.loads(text) if text.strip() else default
-    except (OSError, ValueError):
-        return default
 
 
 # --------------------------------------------------
@@ -70,89 +59,49 @@ def is_law_firm(url):
 # Incidents
 # --------------------------------------------------
 
-def load_shortlist():
-    data = read_json(SHORTLIST_FILE)
-    if data is None:
-        raise FileNotFoundError(f"Shortlist not found: {SHORTLIST_FILE}")
-    people = data.get("people") if isinstance(data, dict) else data
-    return [person for person in people or [] if isinstance(person, dict) and person.get("person_name")]
+def load_incidents():
+    data = read_json(INCIDENTS_FILE)
+    if not isinstance(data, dict) or not isinstance(data.get("incidents"), list):
+        raise FileNotFoundError(f"Incidents file missing or invalid: {INCIDENTS_FILE}")
 
-
-def _person_keys(person):
-    case_ids = set(person.get("case_ids") or [])
-    if person.get("case_id"):
-        case_ids.add(person["case_id"])
-    urls = {source.get("source_url") for source in person.get("sources") or [] if source.get("source_url")}
-    if person.get("source_url"):
-        urls.add(person["source_url"])
-    return case_ids, urls
-
-
-def group_incidents(people):
-    """People who share a case_id or a source URL were in the same crash."""
     incidents = []
-
-    for person in people:
-        case_ids, urls = _person_keys(person)
-        match = next(
-            (incident for incident in incidents
-             if incident["case_ids"] & case_ids or incident["source_urls_set"] & urls),
-            None,
-        )
-        if match is None:
-            match = {"people": [], "case_ids": set(), "source_urls_set": set(), "source_urls": []}
-            incidents.append(match)
-
-        match["people"].append(person)
-        match["case_ids"] |= case_ids
-        for url in [person.get("source_url")] + [s.get("source_url") for s in person.get("sources") or []]:
-            if url and url not in match["source_urls_set"]:
-                match["source_urls_set"].add(url)
-                match["source_urls"].append(url)
-
-    for incident in incidents:
-        names = sorted(name_tokens(p["person_name"])[-1] if name_tokens(p["person_name"]) else ""
-                       for p in incident["people"])
-        seed = "|".join(sorted(incident["case_ids"]) or incident["source_urls"]) + "|" + ",".join(names)
-        incident["incident_key"] = "inc-" + hashlib.sha1(seed.encode()).hexdigest()[:10]
-        incident["names"] = [p["person_name"] for p in incident["people"]]
-
+    for record in data["incidents"]:
+        articles = record.get("articles") or []
+        urls = {u for a in articles for u in (a.get("url"), a.get("rss_url"), a.get("final_url")) if u}
+        incidents.append({
+            "incident_key": record["incident_id"],
+            "names": [],  # filled from the first LLM pass
+            "headlines": [a.get("title") for a in articles if a.get("title")],
+            "source_urls_set": urls,
+            "articles": articles,
+            "grouping": {
+                key: record.get(key)
+                for key in ("source_case_ids", "candidate_incident_dates", "locations", "conflicts",
+                            "uncertainties", "grouping_rationale", "publishers")
+            },
+        })
     return incidents
 
 
-def published_dates(incident):
-    """source_url -> published_date from the shortlist entries."""
-    dates = {}
-    for person in incident["people"]:
-        for source in person.get("sources") or []:
-            if source.get("source_url") and source.get("published_date"):
-                dates[source["source_url"]] = source["published_date"]
-    return dates
-
-
-def load_extracted_texts():
-    records = read_json(EXTRACTED_TEXT_FILE, default=[]) or []
-    return [record for record in records if isinstance(record, dict) and record.get("text")]
-
-
-def existing_sources(incident, extracted_records):
-    """Article texts that step 2 already fetched for this incident (no new requests)."""
-    dates = published_dates(incident)
+def existing_sources(incident):
+    """Article texts that link_extraction already fetched for this incident (no new requests)."""
     found = []
-
-    for record in extracted_records:
-        urls = {record.get("link"), record.get("final_url")}
-        same_url = bool(urls & incident["source_urls_set"])
-        same_case = record.get("case_id") in incident["case_ids"]
-        if not (same_url or (same_case and mentions_any(record["text"], incident["names"]))):
+    for article in incident["articles"]:
+        if not article.get("text_available") or not article.get("text"):
             continue
-        url = record.get("link") or record.get("final_url")
+        metadata = article.get("metadata") or {}
         found.append({
-            "url": url,
-            "title": record.get("title"),
-            "publisher": record.get("publisher"),
-            "published_at": dates.get(url) or dates.get(record.get("final_url")),
+            "url": article.get("final_url") or article.get("url"),
+            "title": article.get("title"),
+            "publisher": article.get("publisher"),
+            "published_at": metadata.get("date_published") or article.get("published_at"),
             "origin": "already_fetched",
-            "text": record["text"],
+            "text": article["text"],
         })
     return found
+
+
+def input_fingerprint(incident):
+    """Changes when the incident's articles change, so its analysis is redone."""
+    urls = sorted(a.get("canonical_url") or a.get("url") or "" for a in incident["articles"])
+    return hashlib.sha1("|".join(urls).encode()).hexdigest()[:16]

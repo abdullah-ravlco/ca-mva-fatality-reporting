@@ -1,6 +1,6 @@
-"""Open article URLs with step 2's fetcher (curl_cffi, Google News decoding,
-WordPress and Wayback fallbacks). Results are cached between runs, so a URL
-is fetched at most once."""
+"""Open article URLs with step 2's fetcher (Google News decoding, one page fetch;
+blocked pages are reported, not worked around). Results are cached between runs,
+so a URL is fetched at most once."""
 
 import json
 
@@ -24,8 +24,10 @@ class Fetcher:
         if target is None:
             return {"ok": False, "url": url, "error": decode_error}
 
-        if target in self.cache:
-            return dict(self.cache[target], url=target, cached=True)
+        cached = self.cache.get(target)
+        # Entries fetched by the removed WordPress/Wayback fallbacks are not reused.
+        if cached and cached.get("method") in (None, "page"):
+            return dict(cached, url=target, cached=True)
 
         try:
             result = _link.attempt(target)

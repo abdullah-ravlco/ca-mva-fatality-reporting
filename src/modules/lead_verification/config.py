@@ -1,20 +1,18 @@
-"""Settings for step 4: verifying the shortlisted leads from article_analysis."""
+"""Settings for step 4: analysing each grouped incident against its sources."""
 
 import re
 
 from config.settings import module_data_dir
 
-# Inputs from earlier steps.
-SHORTLIST_FILE = module_data_dir("article_analysis") / "shortlisted_articles.json"
-EXTRACTED_TEXT_FILE = module_data_dir("link_extraction") / "extracted_text.json"
+# Input from the incident_grouping step.
+INCIDENTS_FILE = module_data_dir("incident_grouping") / "incidents.json"
 
 # Outputs.
-DATA_DIR = module_data_dir("lead_verification")
-OUTPUT_FILE = DATA_DIR / "verified_leads.json"
-FETCH_CACHE_FILE = module_data_dir("lead_verification") / "fetch_cache.json"
-
-# A lead whose verified incident date is older than this is rejected.
-MAX_DAYS = 10
+MODULE = "lead_verification"
+DATA_DIR = module_data_dir(MODULE)
+OUTPUT_NAME = "incident_analysis.json"
+OUTPUT_FILE = DATA_DIR / OUTPUT_NAME
+FETCH_CACHE_FILE = DATA_DIR / "fetch_cache.json"
 
 # Follow-up search (Google News RSS), per incident.
 GOOGLE_NEWS_RSS_URL = "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
@@ -23,6 +21,7 @@ MAX_QUERIES_PER_INCIDENT = 4
 MAX_RESULTS_PER_QUERY = 8
 MAX_FETCHES_PER_INCIDENT = 10
 MAX_NEW_SOURCES_PER_INCIDENT = 5
+FOLLOWUP_REQUEST_DELAY_SECONDS = 2.0
 
 # LLM web search (OpenAI web_search tool): only proposes URLs, which are then
 # fetched and checked like any other source. Used only when fields are missing.
@@ -51,9 +50,11 @@ BLOCKED_HOST_RE = re.compile(
     re.I,
 )
 
-# Fields whose absence triggers the LLM web search.
-KEY_PERSON_FIELDS = ("age", "residence", "fault")
-KEY_INCIDENT_FIELDS = ("date", "location")
+# Fields whose absence triggers the LLM web search. Person fields are checked
+# for people reported killed only. Fault is not searched for: it is reported only
+# as the sources state it.
+KEY_PERSON_FIELDS = ("age", "residence")
+KEY_INCIDENT_FIELDS = ("incident_date", "location")
 
 REQUEST_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "

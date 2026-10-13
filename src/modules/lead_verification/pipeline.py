@@ -1,69 +1,62 @@
-"""Step 4: verify the shortlisted leads from article_analysis.
+"""Step 4: analyse every grouped incident against its sources (one LLM call per incident).
 
-For each incident in shortlisted_articles.json:
-  1. collect the article texts step 2 already fetched (no new requests);
-  2. search Google News RSS for follow-up reports naming the people;
-  3. LLM reads all sources and lists every fact with a source + exact quote;
-  4. verifier.py keeps only quotes that really appear in the sources and
-     sets each field to confirmed / single_source / conflict / missing;
+For each incident in data/incident_grouping/incidents.json:
+  1. use the article texts link_extraction already fetched (no new requests);
+  2. LLM reads all of them and lists every fact and every person involved, each
+     fact with a source + exact quote;
+  3. verifier.py keeps only quotes that really appear in the sources and sets
+     each field to confirmed / single_source / conflict / missing;
+  4. once people are named, Google News RSS is searched for follow-up reports
+     naming them; if new sources are found, steps 2-3 run again;
   5. if key fields are still missing, the LLM web search proposes more URLs,
-     which are fetched, checked, and steps 3-4 run again.
+     which are fetched, checked, and steps 2-3 run again.
 
-Output: data/verified_leads.json (final). data/fetch_cache.json only stores
-downloaded pages so they are not fetched again.
+Output: data/lead_verification/incident_analysis.json - every incident, with
+scope checks (in window / in California / fatality established), an evidence
+status, every person (named or unnamed) and what the sources say about fault.
+Nothing is filtered out by fault or injury severity.
 """
 
-import json
-import re
-from datetime import date, datetime, timezone
+import logging
+from collections import Counter
+from datetime import datetime, timezone
 
-from src.core.logger import configure_logging, get_logger
+from src.core.logger import configure_logging
+from src.core.outputs import read_json, write_stage_json
 from src.modules.lead_verification.config import (
-    DATA_DIR,
     KEY_INCIDENT_FIELDS,
     KEY_PERSON_FIELDS,
     LLM_WEB_SEARCH,
     MAX_WEB_SEARCHES_PER_RUN,
+    MODULE,
     OUTPUT_FILE,
+    OUTPUT_NAME,
 )
 from src.modules.lead_verification.evidence_llm import build_llm, extract_evidence, llm_model, rank_sources
 from src.modules.lead_verification.fetcher import Fetcher
 from src.modules.lead_verification.followup_search import search_followups
 from src.modules.lead_verification.incidents import (
     existing_sources,
-    group_incidents,
     host_of,
+    input_fingerprint,
     is_law_firm,
     is_official,
-    load_extracted_texts,
-    load_shortlist,
+    load_incidents,
     mentions_any,
-    read_json,
 )
 from src.modules.lead_verification.llm_web_search import web_search_urls
 from src.modules.lead_verification.verifier import verify_incident
 
 
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-configure_logging()
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
-# Incidents with these results are not re-verified on the next run.
-FINAL_STATUSES = {"verified", "rejected"}
+ANALYSED = "analysed"
+NO_TEXT = "no_text"          # no article text could be read; nothing for the LLM to check
+FAILED = "failed"            # LLM or processing error; retried next run
 
 
 def now():
     return datetime.now(timezone.utc).isoformat()
-
-
-def write_json_atomic(path, data):
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(path)
-
-
-def slug(text):
-    return re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
 
 
 # --------------------------------------------------
@@ -101,17 +94,36 @@ def public_sources(sources):
     ]
 
 
-def missing_key_fields(leads):
-    missing = set()
-    for lead in leads:
-        status = lead["field_status"]
-        for field in KEY_PERSON_FIELDS + KEY_INCIDENT_FIELDS:
-            key = "incident_date" if field == "date" else field
-            if status.get(key) == "missing":
+def missing_key_fields(result):
+    """Fields still missing after verification (incident fields, and people reported killed)."""
+    missing = {field for field in KEY_INCIDENT_FIELDS if result["field_status"].get(field) == "missing"}
+    for person in result["people"]:
+        if person["summary"]["outcome"] != "killed":
+            continue
+        if person["name_status"] == "unnamed":
+            missing.add("name of the person killed")
+        for field in KEY_PERSON_FIELDS:
+            if person["field_status"].get(field) == "missing":
                 missing.add(field)
-        if lead["summary"]["at_fault"] in (None, "not_established"):
-            missing.add("who caused the crash")
     return sorted(missing)
+
+
+def named_people(result):
+    return [p["summary"]["name"] for p in result["people"] if p["summary"]["name"]]
+
+
+def describe_for_search(incident, result):
+    """Context the follow-up and web searches use."""
+    incident["names"] = named_people(result)
+    incident["people"] = [
+        {"display_name": p["display_name"], "age": p["summary"]["age"], "outcome": p["summary"]["outcome"]}
+        for p in result["people"]
+    ]
+    incident["known"] = {
+        "incident_date": result["summary"]["incident_date"],
+        "location": result["summary"]["location"],
+        "headline": next(iter(incident.get("headlines") or []), None),
+    }
 
 
 def web_search_sources(client, incident, store, fetcher, missing, log):
@@ -145,63 +157,67 @@ def web_search_sources(client, incident, store, fetcher, missing, log):
 # One incident
 # --------------------------------------------------
 
-def verify_one(incident, extracted_records, client, fetcher, budget, today):
-    """(leads, log). budget is a one-item list with the remaining web searches."""
-    log = {"incident_key": incident["incident_key"], "names": incident["names"]}
-    store = []
-
-    log["already_fetched"] = add_sources(store, existing_sources(incident, extracted_records))
-
-    known_urls = set(incident["source_urls_set"]) | {s["url"] for s in store}
-    log["followup_added"] = add_sources(store, search_followups(incident, known_urls, fetcher, log))
-
-    if not store:
-        raise ValueError("No source text available for this incident.")
-
+def analyse(client, incident, store, log):
     sources = numbered(store)
+    log["llm_calls"] = log.get("llm_calls", 0) + 1
     evidence = extract_evidence(client, incident, sources)
-    leads = verify_incident(incident, evidence, sources, today)
+    return verify_incident(incident, evidence, sources), sources
 
-    missing = missing_key_fields(leads)
-    if LLM_WEB_SEARCH and missing and budget[0] > 0:
+
+def analyse_incident(incident, client, fetcher, budget):
+    """(result, sources, log) for one incident with article text."""
+    log = {"already_fetched": 0, "followup_added": 0, "web_search_added": 0}
+    store = []
+    log["already_fetched"] = add_sources(store, existing_sources(incident))
+
+    result, sources = analyse(client, incident, store, log)
+    describe_for_search(incident, result)
+
+    # Follow-up reports can only be matched to this incident by a person's name.
+    if incident["names"]:
+        known_urls = set(incident["source_urls_set"]) | {s["url"] for s in store}
+        log["followup_added"] = add_sources(store, search_followups(incident, known_urls, fetcher, log))
+        if log["followup_added"]:
+            result, sources = analyse(client, incident, store, log)
+            describe_for_search(incident, result)
+
+    missing = missing_key_fields(result)
+    if LLM_WEB_SEARCH and missing and incident["names"] and budget[0] > 0:
         budget[0] -= 1
-        added = add_sources(store, web_search_sources(client, incident, store, fetcher, missing, log))
-        log["web_search_added"] = added
-        if added:
-            sources = numbered(store)
-            evidence = extract_evidence(client, incident, sources)
-            leads = verify_incident(incident, evidence, sources, today)
+        log["web_search_added"] = add_sources(store, web_search_sources(client, incident, store, fetcher, missing, log))
+        if log["web_search_added"]:
+            result, sources = analyse(client, incident, store, log)
 
-    for lead, person in zip(leads, incident["people"]):
-        lead.update({
-            "lead_id": f"{incident['incident_key']}-{slug(person['person_name'])}",
-            "incident_key": incident["incident_key"],
-            "people_in_incident": incident["names"],
-            "shortlist_entry": {
-                key: person.get(key)
-                for key in ("person_name", "person_age", "incident_date", "accident_location",
-                            "lead_status", "lead_flags", "source_url", "case_ids")
-            },
-            "sources": public_sources(sources),
-            "verified_at": now(),
-        })
     log["sources_used"] = [s["url"] for s in sources]
-    return leads, log
+    return result, sources, log
 
 
-def failed_leads(incident, error):
-    return [
-        {
-            "lead_id": f"{incident['incident_key']}-{slug(person['person_name'])}",
-            "incident_key": incident["incident_key"],
-            "verification_status": "verification_failed",
-            "status_reasons": [str(error)],
-            "summary": {"name": person["person_name"]},
-            "shortlist_entry": {"person_name": person["person_name"], "source_url": person.get("source_url")},
-            "verified_at": now(),
-        }
-        for person in incident["people"]
-    ]
+def incident_output(incident, status, result=None, sources=None, log=None, error=None):
+    output = {
+        "incident_id": incident["incident_key"],
+        "input_fingerprint": input_fingerprint(incident),
+        "analysis_status": status,
+        "analysed_at": now(),
+        "error": error,
+        "grouping": incident["grouping"],
+        "articles": [
+            {key: article.get(key) for key in ("article_id", "url", "title", "publisher", "published_at", "fetch_status")}
+            for article in incident["articles"]
+        ],
+        "sources": public_sources(sources or []),
+        "analysis_log": log or {},
+    }
+    if result:
+        output.update(result)
+    else:
+        output.update(
+            in_scope=None,
+            scope_reasons=[],
+            evidence_status="insufficient",
+            open_questions=["no article text could be read" if status == NO_TEXT else "analysis failed"],
+            people=[],
+        )
+    return output
 
 
 # --------------------------------------------------
@@ -209,80 +225,94 @@ def failed_leads(incident, error):
 # --------------------------------------------------
 
 def previous_results():
-    """incident_key -> leads, for incidents already verified or rejected."""
+    """incident_id -> analysed record from the last output."""
     data = read_json(OUTPUT_FILE, default={}) or {}
-    by_incident = {}
-    for lead in data.get("leads") or []:
-        by_incident.setdefault(lead.get("incident_key"), []).append(lead)
     return {
-        key: leads for key, leads in by_incident.items()
-        if key and all(lead.get("verification_status") in FINAL_STATUSES for lead in leads)
+        record["incident_id"]: record
+        for record in data.get("incidents") or []
+        if record.get("incident_id") and record.get("analysis_status") == ANALYSED
     }
 
 
-def save(results):
-    leads = [lead for key in results for lead in results[key]]
-    counts = {}
-    for lead in leads:
-        counts[lead["verification_status"]] = counts.get(lead["verification_status"], 0) + 1
-
-    write_json_atomic(OUTPUT_FILE, {
+def save(records):
+    statuses = Counter(r["analysis_status"] for r in records)
+    evidence = Counter(r.get("evidence_status") for r in records if r["analysis_status"] == ANALYSED)
+    return write_stage_json(MODULE, OUTPUT_NAME, {
         "run_at": now(),
         "rules": (
-            "Every value comes from a quoted sentence that was found in the cited source. "
+            "Every value comes from a quoted sentence found in the cited source. "
             "confirmed = official source or 2+ independent sites; single_source = one site; "
             "conflict = sources disagree; missing = not found (left null). "
-            "verified = name, date and location confirmed and a source says the person was not at fault. "
-            "Residence is only what the sources state; home addresses are not searched for."
+            "Fault is reported as the sources state it, by statement type, and is never inferred "
+            "from being struck, being a passenger, or another person's arrest or citation; "
+            "it is not a legal determination. in_scope = no check failed (crash date in window, "
+            "in California, a death reported). Residence is only what the sources state; "
+            "home addresses are not searched for."
         ),
-        "status_counts": counts,
-        "total_leads": len(leads),
-        "leads": leads,
+        "summary": {
+            "incidents": len(records),
+            "by_analysis_status": dict(statuses),
+            "by_evidence_status": dict(evidence),
+            "in_scope": sum(1 for r in records if r.get("in_scope") is True),
+            "people_killed": sum(r.get("summary", {}).get("people_killed", 0) for r in records if r.get("summary")),
+        },
+        "incidents": records,
     })
 
 
 def main():
-    incidents = group_incidents(load_shortlist())
-    extracted_records = load_extracted_texts()
+    incidents = load_incidents()
     previous = previous_results()
+    records, pending = [], []
+
+    for incident in incidents:
+        old = previous.get(incident["incident_key"])
+        if old and old.get("input_fingerprint") == input_fingerprint(incident):
+            records.append(old)
+        elif not existing_sources(incident):
+            records.append(incident_output(incident, NO_TEXT))
+        else:
+            pending.append(incident)
+
     logger.info(
-        "Shortlisted people: %s in %s incidents (crashes with several victims are verified together); "
-        "%s incidents already final",
-        sum(len(i["people"]) for i in incidents), len(incidents),
-        sum(1 for i in incidents if i["incident_key"] in previous),
+        "Incidents: %s (%s unchanged since the last analysis, %s without text, %s to analyse)",
+        len(incidents), len(records) - sum(1 for r in records if r["analysis_status"] == NO_TEXT),
+        sum(1 for r in records if r["analysis_status"] == NO_TEXT), len(pending),
     )
-
-    pending = [incident for incident in incidents if incident["incident_key"] not in previous]
-    results = {incident["incident_key"]: previous[incident["incident_key"]]
-               for incident in incidents if incident["incident_key"] in previous}
-
     if not pending:
-        save(results)
-        logger.info("Nothing new to verify.")
-        return
+        save(records)
+        logger.info("Nothing new to analyse.")
+        return True
 
-    client = build_llm()
+    client = build_llm()  # raises when OPENAI_API_KEY is missing: the run stops here
     fetcher = Fetcher()
     budget = [MAX_WEB_SEARCHES_PER_RUN]
-    today = date.today()
+    failures = 0
 
     for index, incident in enumerate(pending, start=1):
-        logger.info("[%s/%s] Verifying %s", index, len(pending), ", ".join(incident["names"]))
+        logger.info("[%s/%s] Analysing %s (%s articles)", index, len(pending), incident["incident_key"], len(incident["articles"]))
         try:
-            leads, _log = verify_one(incident, extracted_records, client, fetcher, budget, today)
-            for lead in leads:
-                logger.info("  %s: %s %s", lead["summary"]["name"], lead["verification_status"],
-                            "; ".join(lead["status_reasons"]))
+            result, sources, log = analyse_incident(incident, client, fetcher, budget)
+            records.append(incident_output(incident, ANALYSED, result, sources, log))
+            logger.info(
+                "  in_scope=%s evidence=%s people=%s killed=%s",
+                result["in_scope"], result["evidence_status"], len(result["people"]), result["summary"]["people_killed"],
+            )
         except Exception as error:
-            logger.exception("  Verification failed (will be retried next run)")
-            leads = failed_leads(incident, error)
+            failures += 1
+            logger.exception("  Analysis failed (will be retried next run)")
+            records.append(incident_output(incident, FAILED, error=f"{type(error).__name__}: {error}"))
 
-        results[incident["incident_key"]] = leads
         fetcher.save()
-        save(results)
+        save(records)
 
     logger.info("Done. Output: %s", OUTPUT_FILE)
+    if failures == len(pending):
+        logger.error("Every incident analysis failed.")
+        return False
+    return True
 
 
 if __name__ == "__main__":
+    configure_logging()
     main()

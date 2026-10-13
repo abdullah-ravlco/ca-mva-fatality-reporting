@@ -1,11 +1,13 @@
-"""Find more articles about a shortlisted incident with Google News RSS.
+"""Find more articles about an incident with Google News RSS.
 
-Queries use the person's full name (and the original headline), so follow-up
+Runs only once the first LLM pass has found named people. Queries use each
+person's full name (and the original headline), so follow-up
 reports such as "victim identified", arrests or obituaries are found. A result
 is kept only if its text names one of the incident's people.
 """
 
 import re
+import time
 from urllib.parse import quote_plus
 
 import feedparser
@@ -13,6 +15,7 @@ import requests
 
 from src.modules.lead_verification.config import (
     BLOCKED_HOST_RE,
+    FOLLOWUP_REQUEST_DELAY_SECONDS,
     GOOGLE_NEWS_RSS_URL,
     MAX_FETCHES_PER_INCIDENT,
     MAX_NEW_SOURCES_PER_INCIDENT,
@@ -37,8 +40,8 @@ def build_queries(incident):
             short = f"{words[0]} {words[-1]}"
             queries.append(f'"{short}"')
             queries.append(f'"{short}" crash')
-    for person in incident["people"]:
-        title = TITLE_SUFFIX_RE.sub("", person.get("article_title") or "").strip()
+    for headline in incident.get("headlines") or []:
+        title = TITLE_SUFFIX_RE.sub("", headline or "").strip()
         if title:
             queries.append(title)
             break
@@ -53,6 +56,7 @@ def build_queries(incident):
 def google_news_items(query):
     """[(title, link, published)] for one Google News RSS search (never raises)."""
     url = GOOGLE_NEWS_RSS_URL.format(query=quote_plus(f"{query} when:{SEARCH_WINDOW_DAYS}d"))
+    time.sleep(FOLLOWUP_REQUEST_DELAY_SECONDS)
     try:
         response = requests.get(url, headers={"User-Agent": REQUEST_USER_AGENT}, timeout=20)
         response.raise_for_status()
