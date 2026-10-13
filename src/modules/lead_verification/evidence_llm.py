@@ -9,9 +9,9 @@ and one victim reported by several articles stays one person.
 
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 
-from src.core.llm_client import build_llm, llm_model, request_json
+from src.core.llm_client import build_llm, llm_model, request_structured
 from src.modules.lead_verification.config import MAX_SOURCE_CHARS, MAX_SOURCES_PER_LLM_CALL
 
 
@@ -26,18 +26,14 @@ INDICATES = ("responsibility", "no_responsibility", "undetermined")
 
 
 class Claim(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
     value: Optional[str] = None
     source: Optional[str] = None
     quote: Optional[str] = None
 
-    @field_validator("value", "source", "quote", mode="before")
+    @field_validator("value", "source", "quote")
     @classmethod
     def as_text(cls, value):
-        if value is None or isinstance(value, bool):
-            return None
-        return str(value).strip() or None
+        return (value or "").strip() or None
 
 
 class FaultStatement(Claim):
@@ -45,46 +41,18 @@ class FaultStatement(Claim):
 
     statement_type: Optional[Literal[STATEMENT_TYPES]] = None
     attributed_to: Optional[str] = None
-    indicates: Literal[INDICATES] = "undetermined"
+    indicates: Literal[INDICATES]
 
-    @field_validator("statement_type", mode="before")
-    @classmethod
-    def known_type(cls, value):
-        return value if value in STATEMENT_TYPES else None
-
-    @field_validator("indicates", mode="before")
-    @classmethod
-    def known_direction(cls, value):
-        return value if value in INDICATES else "undetermined"
-
-    @field_validator("attributed_to", mode="before")
+    @field_validator("attributed_to")
     @classmethod
     def attribution_text(cls, value):
-        return str(value).strip() or None if value is not None else None
+        return (value or "").strip() or None
 
 
-def as_claim_list(value):
-    """The model sometimes returns one claim {...} or null instead of [{...}]."""
-    if value is None:
-        return []
-    if isinstance(value, dict):
-        return [value]
-    if isinstance(value, list):
-        return [item for item in value if isinstance(item, dict)]
-    return []
-
-
+# These models are also the response schema sent to the model (structured
+# outputs), where every field is required; the defaults only apply to objects
+# built in code.
 class PersonEvidence(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    @field_validator(
-        "full_name", "age", "residence", "outcome", "role", "driver_of_vehicle", "fault_statements",
-        mode="before",
-    )
-    @classmethod
-    def claim_lists(cls, value):
-        return as_claim_list(value)
-
     person_ref: Optional[str] = None
     descriptor: Optional[str] = None
     full_name: List[Claim] = Field(default_factory=list)
@@ -97,8 +65,6 @@ class PersonEvidence(BaseModel):
 
 
 class IncidentEvidence(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
     incident_date: List[Claim] = Field(default_factory=list)
     incident_time: List[Claim] = Field(default_factory=list)
     location: List[Claim] = Field(default_factory=list)
@@ -108,29 +74,10 @@ class IncidentEvidence(BaseModel):
     description_sources: List[str] = Field(default_factory=list)
     people: List[PersonEvidence] = Field(default_factory=list)
 
-    @field_validator("incident_date", "incident_time", "location", "crash_type", "other_party", mode="before")
-    @classmethod
-    def claim_lists(cls, value):
-        return as_claim_list(value)
-
-    @field_validator("people", mode="before")
-    @classmethod
-    def people_list(cls, value):
-        if isinstance(value, dict):
-            return [value]
-        return [item for item in value or [] if isinstance(item, dict)]
-
-    @field_validator("description", mode="before")
+    @field_validator("description")
     @classmethod
     def description_text(cls, value):
-        return value if isinstance(value, str) and value.strip() else None
-
-    @field_validator("description_sources", mode="before")
-    @classmethod
-    def as_list(cls, value):
-        if isinstance(value, str):
-            return [value]
-        return [str(v) for v in value or [] if v]
+        return (value or "").strip() or None
 
 
 def rank_sources(sources):
@@ -163,7 +110,7 @@ Never use outside knowledge, never guess, never fill gaps.
 SOURCES:
 {_sources_block(sources)}
 
-Return one JSON object:
+Fill the response fields:
 {{
   "incident_date": [claim],
   "incident_time": [claim],
@@ -193,7 +140,6 @@ A fault_statement is a claim plus
   "attributed_to": who made the statement, as written (e.g. "CHP", "police",
                    "a witness"), or null if unattributed,
   "indicates": "responsibility" | "no_responsibility" | "undetermined".
-Every [claim] field is a JSON LIST, even when there is only one item.
 
 RULES:
 1. Give one claim PER SOURCE that states the fact. If no source states it, [].
@@ -247,17 +193,13 @@ RULES:
     rode in, as written. [] otherwise.
 14. description: 2-3 neutral sentences using only facts from the sources; no
     blame unless attributed (e.g. "CHP said ..."). description_sources lists them.
-15. Return JSON only.
 """
 
 
 def extract_evidence(client, incident, sources):
     """IncidentEvidence for the ranked sources (raises on LLM failure)."""
     prompt = build_prompt(incident, sources)
-    data = request_json(client, llm_model(), prompt, incident["incident_key"])
-    if not isinstance(data, dict):
-        raise ValueError("The model response must be a JSON object.")
-    return IncidentEvidence.model_validate(data)
+    return request_structured(client, llm_model(), prompt, IncidentEvidence, incident["incident_key"])
 
 
 __all__ = ["build_llm", "llm_model", "extract_evidence", "rank_sources", "STATEMENT_TYPES"]
