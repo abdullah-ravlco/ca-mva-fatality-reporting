@@ -7,6 +7,7 @@ page is blocked, the RSS evidence is kept and the block is recorded.
 """
 
 import calendar
+import logging
 from collections import Counter
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlsplit
@@ -25,9 +26,26 @@ from src.modules.source_collection.records import add_example, is_excluded_locat
 from src.modules.source_collection.sources import LOOKBACK_HOURS, MAX_ARTICLE_FETCHES, NEWS_RSS_FEEDS, google_news_feeds
 
 
+logger = logging.getLogger(__name__)
+
 # Only the start of the story is used for location: later paragraphs often link to
 # unrelated stories in other places.
 LOCATION_TEXT_CHARS = 1500
+
+# Feed-item fields kept verbatim in raw_feed_items.json (struct_time fields are left out).
+RAW_ITEM_FIELDS = ("id", "title", "link", "published", "updated", "summary", "author")
+
+
+def raw_item(item, feed):
+    """JSON-safe copy of one feed item as the feed gave it, before any filter."""
+    raw = {field: item.get(field) for field in RAW_ITEM_FIELDS if item.get(field) is not None}
+    source_tag = item.get("source") or {}
+    if source_tag:
+        raw["source"] = {"title": source_tag.get("title"), "href": source_tag.get("href")}
+    raw["feed_name"] = feed["name"]
+    raw["feed_url"] = feed["url"]
+    raw["query"] = feed.get("query")
+    return raw
 
 
 def normalize_link(link, feed_url):
@@ -86,7 +104,11 @@ def records_from_feed(feed, content, now, hours, fetcher, result):
         skipped[reason] += 1
         add_example(result, reason, title, url)
 
+    query = feed.get("query")
+    raw_items = result.setdefault("raw_items", [])
+
     for item in parsed.entries:
+        raw_items.append(raw_item(item, feed))
         title = (item.get("title") or "").strip()
         url = normalize_link(item.get("link"), feed["url"])
         summary = clean_html(item.get("summary"))
@@ -160,9 +182,13 @@ def records_from_feed(feed, content, now, hours, fetcher, result):
             incident_date_basis=incident["incident_date_basis"],
             incident_date_evidence=incident["incident_date_evidence"],
             incident_date_note=incident["incident_date_note"],
+            incident_date_note_type=incident["incident_date_note_type"],
             text_source=article["text_source"],
             page_extraction=article["page_extraction"],
             fetch_error=article["fetch_error"],
+            guid=item.get("id"),
+            query=query,
+            discovered_by_queries=[query] if query else [],
             status=status,
             review_reasons=reasons,
             **location,
@@ -185,14 +211,14 @@ def collect_rss_sources(client, now, hours=LOOKBACK_HOURS):
         result = make_source_result(
             feed["name"], feed["url"], now, feed["kind"]
         )
-        print(f"Reading RSS feed: {feed['name']}")
+        logger.info("Reading RSS feed: %s", feed["name"])
 
         try:
             response = client.get(feed["url"])
         except requests.RequestException as error:
             result["http_status"] = error_status(error)
             result["error"] = str(error)
-            print(f"  failed: {error}")
+            logger.warning("  failed: %s", error)
             checked.append(result)
             continue
 
