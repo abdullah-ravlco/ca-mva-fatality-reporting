@@ -68,6 +68,11 @@ EARLIER_CRASH_RE = re.compile(
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"'])")
 MAX_CANDIDATE_GAP_DAYS = 1
 
+# incident_date_note_type values. Only "earlier" means the crash is known to be old;
+# "conflicting" means the date is uncertain and the story still needs review.
+NOTE_EARLIER = "earlier"
+NOTE_CONFLICTING = "conflicting"
+
 
 def _safe_date(year, month, day):
     try:
@@ -108,13 +113,14 @@ def _resolve(match, published_day):
     return published_day, "relative_to_publication"
 
 
-def _empty(published_local=None, note=None):
+def _empty(published_local=None, note=None, note_type=None):
     return {
         "incident_date": None,
         "incident_date_text": None,
         "incident_date_basis": None,
         "incident_date_evidence": None,
         "incident_date_note": note,
+        "incident_date_note_type": note_type,
         "published_local_date": published_local.isoformat() if published_local else None,
         "publisher_timezone": PUBLISHER_TIMEZONE,
     }
@@ -137,7 +143,11 @@ def find_incident_date(text, published_at):
 
         earlier = EARLIER_CRASH_RE.search(sentence)
         if earlier:
-            return _empty(published_local, f"story places the crash earlier: '{earlier.group(0)}' in: {sentence.strip()[:300]}")
+            return _empty(
+                published_local,
+                f"story places the crash earlier: '{earlier.group(0)}' in: {sentence.strip()[:300]}",
+                NOTE_EARLIER,
+            )
 
         if FOLLOW_UP_SENTENCE_RE.search(sentence):
             continue
@@ -158,7 +168,7 @@ def find_incident_date(text, published_at):
     days = sorted({c[0] for c in candidates})
     if (days[-1] - days[0]).days > MAX_CANDIDATE_GAP_DAYS:
         found = ", ".join(f"'{c[2]}' -> {c[0].isoformat()}" for c in candidates[:4])
-        return _empty(published_local, f"conflicting crash dates in story text: {found}")
+        return _empty(published_local, f"conflicting crash dates in story text: {found}", NOTE_CONFLICTING)
 
     day, basis, phrase, sentence = candidates[0]
     result = _empty(published_local)
