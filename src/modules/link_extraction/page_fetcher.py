@@ -1,10 +1,11 @@
 """Fetch article pages.
 
-Uses curl_cffi when it is installed, otherwise plain requests. Handles:
-- HTTP 401/403: reported as blocked (not retried; access restrictions are respected).
+Uses curl_cffi (libcurl with browser impersonation: real Chrome/Safari TLS and HTTP/2
+fingerprints) when it is installed, otherwise plain requests. Handles:
+- HTTP 401/403: retried once with a second browser profile.
 - HTTP 429: waits for Retry-After (up to MAX_RETRY_AFTER_SECONDS) and retries once.
 - Read timeouts: retried once with a longer timeout.
-- CAPTCHA / bot-verification pages: detected and reported as blocked (never solved).
+- CAPTCHA / bot-verification pages: detected and reported (never solved).
 """
 
 import re
@@ -22,8 +23,7 @@ except ImportError:  # pip install curl_cffi
     HAVE_CURL_CFFI = False
 
 
-# One profile only: a blocked page is not retried with a different browser fingerprint.
-IMPERSONATE_PROFILES = ("chrome",)
+IMPERSONATE_PROFILES = ("chrome", "safari")
 READ_TIMEOUT_SECONDS = 30
 RETRY_READ_TIMEOUT_SECONDS = 60
 MIN_SECONDS_PER_HOST = 2.0
