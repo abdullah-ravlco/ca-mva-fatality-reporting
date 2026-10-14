@@ -5,8 +5,10 @@ Input:  data/source_collection/sources_to_open.json
 Output: data/link_extraction/articles.json          - one record per article, every outcome
         data/link_extraction/extraction_errors.json - fetch/decode failures with diagnostics
 
-Access restrictions are respected: a 401/403 or a CAPTCHA page is recorded as
-"blocked" and the article keeps its RSS data; it is never fetched another way.
+A page that is blocked (401/403, CAPTCHA) or otherwise fails is retried through
+the site's WordPress REST API (blocked pages only) and then the Wayback Machine.
+If every route fails the article is recorded with the page's own status (e.g.
+"blocked") and keeps its RSS data.
 """
 
 import hashlib
@@ -18,10 +20,12 @@ from config.settings import module_data_dir
 from src.core.date_utils import iso, utc_now
 from src.core.logger import configure_logging
 from src.core.outputs import read_json, write_stage_json
+from src.modules.link_extraction.archive_fallback import fetch_archived_article
 from src.modules.link_extraction.full_text_filter import KEEP, apply_full_text_filter
 from src.modules.link_extraction.google_news_decoder import GoogleNewsDecodeError, decode_google_news_url, is_google_news_url
 from src.modules.link_extraction.page_fetcher import PageFetchError, fetch_page_with_url
 from src.modules.link_extraction.text_extractor import extract_article
+from src.modules.link_extraction.wordpress_fallback import fetch_wordpress_article
 from src.modules.source_collection.deduplication import canonical_url
 
 
@@ -40,7 +44,7 @@ AGGREGATOR_HOSTS = ("news.google.com",)
 
 # fetch_status values
 OK = "ok"
-BLOCKED = "blocked"                 # HTTP 401/403 or CAPTCHA page: access restricted
+BLOCKED = "blocked"                 # HTTP 401/403 or CAPTCHA page, and every fallback failed
 FAILED = "failed"                   # other HTTP/network error
 TOO_SHORT = "too_short"             # page fetched, but too little article text
 DECODE_FAILED = "decode_failed"     # Google News link could not be turned into a publisher URL
@@ -104,21 +108,8 @@ def _is_blocked(diagnostics):
     return diagnostics.get("status_code") in (401, 403) or bool(diagnostics.get("block_type"))
 
 
-def attempt(url):
-    """Fetch and extract one publisher/official URL. Returns a result dict (never raises).
-
-    One page fetch (with page_fetcher's timeout and 429 retries). A blocked page is
-    reported as blocked; no other route to the content is tried.
-    """
-    try:
-        html, final_url = fetch_page_with_url(url)
-    except PageFetchError as exc:
-        status = BLOCKED if _is_blocked(exc.diagnostics) else FAILED
-        return {"ok": False, "fetch_status": status, "error": str(exc), "diagnostics": exc.diagnostics}
-    except Exception as exc:
-        return {"ok": False, "fetch_status": FAILED, "error": f"{type(exc).__name__}: {exc}",
-                "diagnostics": {"requested_url": url}}
-
+def _extract(html, url, final_url, method):
+    """Result dict for fetched HTML: ok with text, or a failure explaining why."""
     if urlsplit(final_url or "").netloc in AGGREGATOR_HOSTS:
         return {"ok": False, "fetch_status": FAILED,
                 "error": "Redirect stayed on news.google.com; the publisher article was not reached.",
@@ -129,10 +120,69 @@ def attempt(url):
     if length < MIN_TEXT_CHARS:
         return {"ok": False, "fetch_status": TOO_SHORT, "final_url": final_url, "metadata": extracted["metadata"],
                 "error": f"Suspiciously short extracted text ({length} characters).",
-                "diagnostics": {"requested_url": url, "final_url": final_url}}
+                "diagnostics": {"requested_url": url, "final_url": final_url, "method": method}}
 
     return {"ok": True, "fetch_status": OK, "text": extracted["text"], "metadata": extracted["metadata"],
-            "final_url": final_url, "method": "page"}
+            "final_url": final_url, "method": method}
+
+
+def _failure(exc):
+    status = BLOCKED if _is_blocked(exc.diagnostics) else FAILED
+    return {"ok": False, "fetch_status": status, "error": str(exc), "diagnostics": exc.diagnostics}
+
+
+def attempt(url):
+    """Fetch and extract one publisher/official URL. Returns a result dict (never raises).
+
+    Order: the page itself (browser impersonation via curl_cffi when installed)
+    -> WordPress REST API, only when the page was blocked (401/403/CAPTCHA)
+    -> Wayback Machine snapshot, for any remaining failure (block, 429, timeout,
+       server error, too little text).
+    CAPTCHA pages are never solved; the next fallback is used instead.
+    A failed result keeps the page's own fetch_status (e.g. "blocked").
+    """
+    errors = []
+
+    try:
+        html, final_url = fetch_page_with_url(url)
+        result = _extract(html, url, final_url, "page")
+    except PageFetchError as exc:
+        result = _failure(exc)
+    except Exception as exc:
+        result = {"ok": False, "fetch_status": FAILED, "error": f"{type(exc).__name__}: {exc}",
+                  "diagnostics": {"requested_url": url}}
+    if result["ok"]:
+        return result
+    errors.append(("page", result))
+
+    if result["fetch_status"] == BLOCKED:
+        try:
+            html, api_url = fetch_wordpress_article(url)
+            result = _extract(html, url, api_url, "wordpress_api")
+        except PageFetchError as exc:
+            result = _failure(exc)
+        if result["ok"]:
+            return result
+        errors.append(("wordpress_api", result))
+
+    try:
+        html, snapshot_url = fetch_archived_article(url)
+        result = _extract(html, url, snapshot_url, "wayback_snapshot")
+    except PageFetchError as exc:
+        result = _failure(exc)
+    if result["ok"]:
+        return result
+    errors.append(("wayback_snapshot", result))
+
+    first = errors[0][1]
+    return dict(
+        first,
+        error="; ".join(f"{method}: {r['error']}" for method, r in errors),
+        diagnostics=dict(
+            first.get("diagnostics") or {},
+            fallbacks={method: r.get("diagnostics") for method, r in errors[1:]},
+        ),
+    )
 
 
 def resolve_url(url, decoded):

@@ -44,6 +44,4 @@ BROWSER_USER_AGENT = (
 )
 REQUEST_DELAY_SECONDS = 2.0
 REQUEST_TIMEOUT_SECONDS = 25
-# A 401/403 is an access restriction: it is recorded as "blocked", not retried
-# with browser-like headers.
-BROWSER_RETRY_ON_403 = False
+BROWSER_RETRY_ON_403 = True
