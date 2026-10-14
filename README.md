@@ -58,9 +58,12 @@ Every run is also kept in `data/runs/<run_id>/<stage>/`.
 
 ## Policies
 
-- **Access restrictions are respected.** A 401/403 response or a CAPTCHA page is recorded as
-  `blocked`; the article is not fetched another way (no alternate APIs, archives or browser
-  fingerprints). Its RSS data is kept.
+- **Blocked pages fall back.** A 401/403 response is retried once with a second browser
+  profile. A page that is still blocked (or shows a CAPTCHA, which is never solved) is read
+  through the site's WordPress REST API, and any remaining failure through the Wayback
+  Machine. `extraction_method` records the route (`page`, `wordpress_api`,
+  `wayback_snapshot`). If every route fails the article is `blocked`/`failed` and keeps its
+  RSS data.
 - **Fault is never inferred.** It is reported as the sources state it, with the statement
   type (official finding, attributed to authorities, allegation, citation/arrest, under
   investigation). Being struck, being a passenger, or another person's arrest does not make
