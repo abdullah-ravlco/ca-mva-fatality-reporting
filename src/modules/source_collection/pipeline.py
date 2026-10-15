@@ -13,10 +13,12 @@ from src.core.date_utils import iso, utc_now
 from src.core.http_client import HttpClient
 from src.core.logger import configure_logging
 from src.modules.source_collection.case_grouping import build_cases
-from src.modules.source_collection.collectors.base import collect_from_source
-from src.modules.source_collection.collectors.riverside_coroner import collect_riverside_coroner
+# Official-site collectors are disabled; only RSS is collected. Re-enable together
+# with COLLECTORS, collect_official_sources() and "Step 1" in main() below.
+# from src.modules.source_collection.collectors.base import collect_from_source
+# from src.modules.source_collection.collectors.riverside_coroner import collect_riverside_coroner
 from src.modules.source_collection.collectors.rss import collect_rss_sources
-from src.modules.source_collection.collectors.sb_coroner import collect_sb_coroner
+# from src.modules.source_collection.collectors.sb_coroner import collect_sb_coroner
 from src.modules.source_collection.deduplication import canonical_url, deduplicate_records
 from src.modules.source_collection.final_selection import select_records
 from src.modules.source_collection.output_files import (
@@ -25,16 +27,16 @@ from src.modules.source_collection.output_files import (
     write_sources_to_open,
 )
 from src.modules.source_collection.records import make_source_result, refresh_news_status
-from src.modules.source_collection.sources import LOOKBACK_HOURS, SOURCES
+from src.modules.source_collection.sources import LOOKBACK_HOURS  # , SOURCES
 
 logger = logging.getLogger(__name__)
 
 
-COLLECTORS = {
-    "sb_coroner": collect_sb_coroner,
-    "riverside_coroner": collect_riverside_coroner,
-    "listing": collect_from_source,
-}
+# COLLECTORS = {
+#     "sb_coroner": collect_sb_coroner,
+#     "riverside_coroner": collect_riverside_coroner,
+#     "listing": collect_from_source,
+# }
 
 AGGREGATOR_HOSTS = ("news.google.com",)
 # Page reads that prove a publisher URL leads to the article text.
@@ -115,29 +117,30 @@ def label_sources(sources_checked, records):
     return sources_checked
 
 
-def collect_official_sources(client, now):
-    records, checked = [], []
-    for source in SOURCES:
-        logger.info("Collecting: %s", source["name"])
-        try:
-            source_records, result = COLLECTORS[source["type"]](source, client, now, LOOKBACK_HOURS)
-        except Exception as exc:  # one broken parser must not stop the run
-            source_records = []
-            result = make_source_result(source["name"], source["url"], now, source["type"])
-            result["error"] = f"collector crashed: {type(exc).__name__}: {exc}"
-
-        logger.info("  %s candidates%s", result["candidate_count"], f" (error: {result['error']})" if result["error"] else "")
-        records.extend(source_records)
-        checked.append(result)
-    return records, checked
+# def collect_official_sources(client, now):
+#     records, checked = [], []
+#     for source in SOURCES:
+#         logger.info("Collecting: %s", source["name"])
+#         try:
+#             source_records, result = COLLECTORS[source["type"]](source, client, now, LOOKBACK_HOURS)
+#         except Exception as exc:  # one broken parser must not stop the run
+#             source_records = []
+#             result = make_source_result(source["name"], source["url"], now, source["type"])
+#             result["error"] = f"collector crashed: {type(exc).__name__}: {exc}"
+#
+#         logger.info("  %s candidates%s", result["candidate_count"], f" (error: {result['error']})" if result["error"] else "")
+#         records.extend(source_records)
+#         checked.append(result)
+#     return records, checked
 
 
 def main():
     now = utc_now()
     client = HttpClient()
 
-    # Step 1: official websites (coroner releases, CHP).
-    all_records, sources_checked = collect_official_sources(client, now)
+    # Step 1 (disabled): official websites (coroner releases, CHP).
+    # all_records, sources_checked = collect_official_sources(client, now)
+    all_records, sources_checked = [], []
 
     # Step 2: publisher RSS and Google News RSS feeds.
     rss_records, rss_checked = collect_rss_sources(client, now, LOOKBACK_HOURS)

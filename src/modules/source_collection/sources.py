@@ -6,14 +6,13 @@ from urllib.parse import quote_plus
 from config.settings import (
     BROWSER_RETRY_ON_403,
     BROWSER_USER_AGENT,
+    LOOKBACK_HOURS,
     PUBLISHER_TIMEZONE,
     REQUEST_DELAY_SECONDS,
     REQUEST_TIMEOUT_SECONDS,
     TIMEZONE,
     USER_AGENT,
 )
-
-LOOKBACK_HOURS = 168
 
 # Article pages fetched per run to read crash dates/locations when the feed itself
 # doesn't include the full story. Google News links can't be fetched (JS redirect).

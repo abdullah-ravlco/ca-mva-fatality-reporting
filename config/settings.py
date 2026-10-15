@@ -31,6 +31,13 @@ def module_data_dir(module_name):
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # --------------------------------------------------
+# Collection window
+# --------------------------------------------------
+
+# How far back, in hours, crashes and articles are collected (168 = 7 days).
+LOOKBACK_HOURS = 168
+
+# --------------------------------------------------
 # Shared HTTP / timezone defaults (used by src/core)
 # --------------------------------------------------
 

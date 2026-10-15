@@ -5,6 +5,10 @@ Statuses:
     california_confirmed  - a California-specific indicator was found
     outside_california    - another state is named and nothing points to California
     location_unconfirmed  - no usable location indicator
+
+Where someone is FROM is not where the crash happened: "Semi driver from California
+dies in crash on I-35 in Olathe" and "California woman killed in Honolulu crash" are
+not California crashes, so residence phrases are ignored when looking for California.
 """
 
 import re
@@ -69,6 +73,23 @@ OTHER_STATES = [
 ]
 
 
+# Interstates that exist in California. Any other interstate number (I-35, I-94, I-95)
+# points to another state.
+CA_INTERSTATE_NUMBERS = {
+    5, 8, 10, 15, 40, 80, 105, 110, 205, 210, 215, 238, 280, 305, 380, 405, 505, 580, 605, 680,
+    710, 780, 805, 880, 980,
+}
+INTERSTATE_RE = re.compile(r"\b(?:I-|Interstate\s+)(\d{1,3})\b")
+
+# Other places that headlines name without "in <State>".
+OTHER_PLACES = ["Honolulu", "Olathe", "Kansas City", "Salt Lake City", "Boise", "Portland", "Seattle", "Phoenix"]
+STATE_ABBREVIATIONS = r"N\.J\.|N\.Y\.|Pa\.|Mass\.|Conn\.|Md\.|Va\.|Fla\.|Ga\.|Tenn\.|Mich\.|Wis\.|Minn\.|Ill\."
+RESIDENT_NOUNS = (
+    r"man|men|woman|women|driver|motorist|resident|residents|teen|boy|girl|couple|family|"
+    r"motorcyclist|bicyclist|pedestrian|trucker|native|father|mother|student|worker|veteran|tourist"
+)
+
+
 def _alternation(names):
     return "|".join(re.escape(name) for name in sorted(names, key=len, reverse=True))
 
@@ -84,8 +105,33 @@ ROAD_RE = re.compile(
     r"\b(?:I-\d{1,3}|Interstate\s+\d{1,3}|(?:State\s+)?(?:Route|Highway|Hwy\.?)\s+\d{1,3}"
     r"|SR-?\d{1,3}|US-?\d{1,3}|U\.S\.\s+\d{1,3}|(?:\d{1,3}|[A-Z][a-z]+)\s+Freeway)\b"
 )
-# Another state only counts when used as a place: "in Arizona", "near Las Vegas", ", Texas".
-OTHER_STATE_RE = re.compile(rf"(?:\bin|\bnear|,)\s+({_alternation(OTHER_STATES)})\b")
+# Another state only counts when used as a place: "in Arizona", "near Las Vegas", ", Texas",
+# "western Kansas", "Kansas man", "N.J. motorcyclist", "Honolulu parking garage".
+OTHER_STATE_RE = re.compile(
+    rf"(?:\bin|\bnear|,)\s+({_alternation(OTHER_STATES)})\b"
+    rf"|\b(?:northern|southern|eastern|western|central)\s+({_alternation(OTHER_STATES)})\b"
+    rf"|\b({_alternation(OTHER_STATES)})\s+(?:{RESIDENT_NOUNS})\b"
+    rf"|(?<!\w)({STATE_ABBREVIATIONS})"
+    rf"|\b({_alternation(OTHER_PLACES)})\b",
+)
+# "from California", "California woman", "California-based": where someone lives. A region
+# ("Southern California woman") still counts as a place.
+RESIDENCE_RE = re.compile(
+    rf"\b(?:from|of|out\s+of)\s+(?:(?:northern|southern|central)\s+)?california\b"
+    rf"|\bcalifornia(?:-based|\s+(?:{RESIDENT_NOUNS})\b)",
+    re.IGNORECASE,
+)
+
+
+def other_state_evidence(text):
+    """The other-state place named in the text, or None."""
+    match = OTHER_STATE_RE.search(text)
+    if match:
+        return next(group for group in match.groups() if group)
+    for number in INTERSTATE_RE.finditer(text):
+        if int(number.group(1)) not in CA_INTERSTATE_NUMBERS:
+            return number.group(0)
+    return None
 
 
 def detect_location(*texts):
@@ -95,8 +141,8 @@ def detect_location(*texts):
     county = COUNTY_RE.search(text)
     city = CITY_RE.search(text)
     road = ROAD_RE.search(text)
-    strong = CA_STRONG_RE.search(text)
-    other_state = OTHER_STATE_RE.search(text)
+    strong = CA_STRONG_RE.search(RESIDENCE_RE.sub(" ", text))
+    other_state = other_state_evidence(text)
 
     evidence = None
     if strong:
@@ -106,7 +152,7 @@ def detect_location(*texts):
     elif city and not other_state:
         status, evidence = CALIFORNIA_CONFIRMED, city.group(0)
     elif other_state:
-        status, evidence = OUTSIDE_CALIFORNIA, other_state.group(1)
+        status, evidence = OUTSIDE_CALIFORNIA, other_state
     else:
         status = LOCATION_UNCONFIRMED
 

@@ -33,7 +33,7 @@ Logs go to the console and `logs/pipeline_<run_id>.log`.
 
 | # | Stage | Reads | Writes (`data/<stage>/`) |
 |---|---|---|---|
-| 1 | `source_collection` | Google News RSS queries, publisher RSS feeds, coroner and CHP pages | `raw_feed_items.json` (every feed item, before filters), `fetched_sources.json` (every record + filter decision), `sources_to_open.json` (cases) |
+| 1 | `source_collection` | Google News RSS queries and publisher RSS feeds (coroner and CHP page collectors are disabled). Feed items without a publication date are kept; reports of the same crash are merged into one case listing every link | `raw_feed_items.json` (every feed item, before filters), `fetched_sources.json` (every record + filter decision), `sources_to_open.json` (cases) |
 | 2 | `link_extraction` | `sources_to_open.json` | `articles.json` (one record per article: fetch status, text, page metadata, full-text filter decision), `extraction_errors.json` |
 | 3 | `incident_grouping` | `articles.json` (kept articles) | `incidents.json` (articles grouped per crash, candidate dates/locations, conflicts, uncertainties, grouping rationale) |
 | 4 | `lead_verification` | `incidents.json` | `incident_analysis.json` (per incident: scope checks, evidence status, every person, fault statements, quotes and source URLs), `fetch_cache.json` |
