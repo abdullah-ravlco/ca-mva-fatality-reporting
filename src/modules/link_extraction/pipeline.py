@@ -36,8 +36,9 @@ ERRORS_FILE = "extraction_errors.json"
 
 # Shorter text is treated as an error page or redirect stub.
 MIN_TEXT_CHARS = 100
-# Upper bound on articles opened for one case (cases are usually 1-3 articles).
-MAX_ARTICLES_PER_CASE = 8
+# Upper bound on articles opened for one case (cases are usually 1-3 articles; a
+# widely covered crash can have more, and every link of a case should be opened).
+MAX_ARTICLES_PER_CASE = 20
 
 # Redirect pages that don't contain the article (Google News needs JavaScript).
 AGGREGATOR_HOSTS = ("news.google.com",)

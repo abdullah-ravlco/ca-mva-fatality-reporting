@@ -81,8 +81,12 @@ def _safe_date(year, month, day):
         return None
 
 
-def _resolve(match, published_day):
-    """(date, basis) for one phrase match, or None."""
+def _resolve(match, published_day, reference_day=None):
+    """(date, basis) for one phrase match, or None.
+
+    Without a publication date only dates that name a month and day can be placed
+    (the year is inferred from reference_day); "Saturday" or "yesterday" can't.
+    """
     groups = match.groupdict()
 
     if groups["month"]:
@@ -90,12 +94,13 @@ def _resolve(match, published_day):
         day = int(groups["day"])
         if groups["year"]:
             return _safe_date(int(groups["year"]), month, day), "explicit"
-        if published_day is None:
+        anchor = published_day or reference_day
+        if anchor is None:
             return None
-        candidate = _safe_date(published_day.year, month, day)
-        if candidate and candidate > published_day:
-            candidate = _safe_date(published_day.year - 1, month, day)
-        return candidate, "relative_to_publication"
+        candidate = _safe_date(anchor.year, month, day)
+        if candidate and candidate > anchor:
+            candidate = _safe_date(anchor.year - 1, month, day)
+        return candidate, "relative_to_publication" if published_day else "relative_to_collection"
 
     if groups["num_month"]:
         return _safe_date(int(groups["num_year"]), int(groups["num_month"]), int(groups["num_day"])), "explicit"
@@ -126,10 +131,12 @@ def _empty(published_local=None, note=None, note_type=None):
     }
 
 
-def find_incident_date(text, published_at):
+def find_incident_date(text, published_at, reference_day=None):
     """Crash date found in the story text, with the phrase and sentence used as evidence.
 
     incident_date is a UTC datetime for local midnight of the crash day, or None.
+    reference_day (a date) is only used when published_at is unknown, to infer the
+    year of "Oct. 9"-style dates.
     incident_date_note explains why no date was accepted, when relevant.
     """
     published_local = published_at.astimezone(LOCAL_TZ).date() if published_at else None
@@ -153,12 +160,12 @@ def find_incident_date(text, published_at):
             continue
 
         for match in DATE_PHRASE_RE.finditer(sentence):
-            resolved = _resolve(match, published_local)
+            resolved = _resolve(match, published_local, reference_day)
             if not resolved or resolved[0] is None:
                 continue
             day, basis = resolved
             # A crash can't happen after the story about it was published.
-            if published_local is not None and day > published_local:
+            if (published_local or reference_day) is not None and day > (published_local or reference_day):
                 continue
             candidates.append((day, basis, match.group(0), sentence.strip()[:400]))
 
