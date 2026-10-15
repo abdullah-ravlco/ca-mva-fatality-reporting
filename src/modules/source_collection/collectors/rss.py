@@ -20,7 +20,7 @@ from src.modules.source_collection.article_text import ArticleTextFetcher
 from src.core.date_utils import is_recent, iso, parse_date
 from src.modules.source_collection.filters import looks_relevant
 from src.core.http_client import error_status
-from src.modules.source_collection.incident_dates import find_incident_date
+from src.modules.source_collection.incident_dates import LOCAL_TZ, find_incident_date
 from src.modules.source_collection.location import detect_location
 from src.modules.source_collection.records import add_example, is_excluded_location, make_record, make_source_result, news_status
 from src.modules.source_collection.sources import LOOKBACK_HOURS, MAX_ARTICLE_FETCHES, NEWS_RSS_FEEDS, google_news_feeds
@@ -133,11 +133,9 @@ def records_from_feed(feed, content, now, hours, fetcher, result):
 
         published_at = parse_published_date(item)
 
-        # A story published before the window can't describe a crash inside it.
-        if published_at is None:
-            skip("no_publication_date", title)
-            continue
-        if not is_recent(published_at, now=now, hours=hours):
+        # A story published before the window can't describe a crash inside it. A
+        # story with no publication date is kept: the crash date in its text decides.
+        if published_at is not None and not is_recent(published_at, now=now, hours=hours):
             skip("published_outside_window", title)
             continue
 
@@ -155,10 +153,14 @@ def records_from_feed(feed, content, now, hours, fetcher, result):
             skip("outside_california", title)
             continue
 
-        incident = find_incident_date(" ".join(p for p in (title, summary, story) if p), published_at)
+        incident = find_incident_date(
+            " ".join(p for p in (title, summary, story) if p), published_at, reference_day=now.astimezone(LOCAL_TZ).date()
+        )
         status, reasons = news_status(incident["incident_date"], location["location_status"], now, hours)
         if incident["incident_date_note"]:
             reasons.append(incident["incident_date_note"])
+        if published_at is None:
+            reasons.append("publication date missing in feed; crash date taken from story text only")
         if article["page_extraction"] in ("blocked", "failed"):
             reasons.append(f"article page unavailable ({article['fetch_error']}); RSS text used")
 

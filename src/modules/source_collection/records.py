@@ -40,7 +40,7 @@ def make_record(
         "published_at": None,
         "incident_date": None,
         "incident_date_text": None,
-        "incident_date_basis": None,      # explicit | relative_to_publication | official_record
+        "incident_date_basis": None,      # explicit | relative_to_publication | relative_to_collection | official_record
         "incident_date_evidence": None,
         "case_number": None,
         "traffic_hint": None,

@@ -8,3 +8,4 @@ openai
 pydantic
 python-dotenv
 pytest
+pandas
