@@ -34,6 +34,9 @@ def load_articles():
     if not isinstance(data, dict) or not isinstance(data.get("articles"), list):
         raise FileNotFoundError(f"Articles file missing or invalid: {INPUT_FILE}")
 
+    if data.get("complete") is False:
+        logger.warning("articles.json is from an interrupted link_extraction run; grouping the articles read so far.")
+
     kept, seen = [], set()
     for article in data["articles"]:
         if article.get("filter_decision") != KEEP or article.get("article_id") in seen:

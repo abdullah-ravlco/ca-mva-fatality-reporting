@@ -10,28 +10,17 @@ INCIDENTS_FILE = module_data_dir("incident_grouping") / "incidents.json"
 # Outputs.
 MODULE = "lead_verification"
 DATA_DIR = module_data_dir(MODULE)
-OUTPUT_NAME = "incident_analysis.json"
+OUTPUT_NAME = "verified_leads.json"
 OUTPUT_FILE = DATA_DIR / OUTPUT_NAME
 FETCH_CACHE_FILE = DATA_DIR / "fetch_cache.json"
 
-# Follow-up search (Google News RSS), per incident.
-GOOGLE_NEWS_RSS_URL = "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
-SEARCH_WINDOW_DAYS = 30
-MAX_QUERIES_PER_INCIDENT = 4
-MAX_RESULTS_PER_QUERY = 8
-MAX_FETCHES_PER_INCIDENT = 10
-MAX_NEW_SOURCES_PER_INCIDENT = 5
-FOLLOWUP_REQUEST_DELAY_SECONDS = 2.0
-
-# LLM web search (OpenAI web_search tool): only proposes URLs, which are then
-# fetched and checked like any other source. Used only when fields are missing.
-LLM_WEB_SEARCH = True
-MAX_WEB_SEARCHES_PER_RUN = 20
-MAX_WEB_SEARCH_URLS = 5
-
-# LLM extraction.
-MAX_SOURCES_PER_LLM_CALL = 8
-MAX_SOURCE_CHARS = 12000
+# The agent (agent.py): per incident, how many model calls (tool round trips) and web searches.
+MAX_AGENT_STEPS = 8
+MAX_WEB_SEARCHES_PER_INCIDENT = 6
+# Article text given to the model, per article / per incident, and per page it fetches itself.
+MAX_SOURCE_CHARS = 20000
+MAX_SOURCES_PER_PROMPT = 8
+MAX_FETCHED_PAGE_CHARS = 20000
 MAX_CACHED_TEXT_CHARS = 100000
 
 # Official sources: one of these confirms a fact on its own.
@@ -49,12 +38,6 @@ BLOCKED_HOST_RE = re.compile(
     r"facebook\.com|instagram\.com|tiktok\.com|x\.com|twitter\.com",
     re.I,
 )
-
-# Fields whose absence triggers the LLM web search. Person fields are checked
-# for people reported killed only. Fault is not searched for: it is reported only
-# as the sources state it.
-KEY_PERSON_FIELDS = ("age", "residence")
-KEY_INCIDENT_FIELDS = ("incident_date", "location")
 
 REQUEST_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "

@@ -1,10 +1,10 @@
 """Application CLI entrypoint & orchestrator.
 
 Runs the pipeline stages in order:
-  1. source_collection  - discover articles (Google News RSS, publisher RSS, coroner/CHP
-                          pages), filter them, remove duplicate articles
-  2. link_extraction    - fetch every article, read text + page metadata, re-check
-                          crash date / location / relevance on the full text
+  1. source_collection  - collect items (Google News RSS, publisher RSS, Tavily) into
+                          all_raw.json; filter them into finalized_raw.json
+  2. link_extraction    - open every item of finalized_raw.json, read text + page metadata,
+                          re-check crash date / location / relevance on the full text
   3. incident_grouping  - group the kept articles into incidents (no LLM)
   4. lead_verification  - one LLM analysis per incident, quote-checked against sources
 

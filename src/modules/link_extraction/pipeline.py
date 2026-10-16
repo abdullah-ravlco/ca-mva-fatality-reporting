@@ -1,14 +1,14 @@
-"""Step 2: fetch every article of every case, read its text and page metadata,
-and re-check crash date / location / relevance on the full text.
+"""Step 2: open every article in finalized_raw.json, read its text and page metadata, and
+re-check crash date / location / relevance on the full text.
 
-Input:  data/source_collection/sources_to_open.json
+Input:  data/source_collection/finalized_raw.json (one article per item)
 Output: data/link_extraction/articles.json          - one record per article, every outcome
         data/link_extraction/extraction_errors.json - fetch/decode failures with diagnostics
 
 A page that is blocked (401/403, CAPTCHA) or otherwise fails is retried through
 the site's WordPress REST API (blocked pages only) and then the Wayback Machine.
 If every route fails the article is recorded with the page's own status (e.g.
-"blocked") and keeps its RSS data.
+"blocked") and keeps its collected data.
 """
 
 import hashlib
@@ -17,8 +17,10 @@ from collections import Counter
 from urllib.parse import urlsplit
 
 from config.settings import module_data_dir
-from src.core.date_utils import iso, utc_now
+from src.core.checkpoint import Checkpoint
+from src.core.date_utils import iso, reference_time, utc_now
 from src.core.logger import configure_logging
+from src.core.parallel import parallel_map
 from src.core.outputs import read_json, write_stage_json
 from src.modules.link_extraction.archive_fallback import fetch_archived_article
 from src.modules.link_extraction.full_text_filter import KEEP, apply_full_text_filter
@@ -30,7 +32,7 @@ from src.modules.source_collection.deduplication import canonical_url
 
 
 MODULE = "link_extraction"
-INPUT_FILE = module_data_dir("source_collection") / "sources_to_open.json"
+INPUT_FILE = module_data_dir("source_collection") / "finalized_raw.json"
 ARTICLES_FILE = "articles.json"
 ERRORS_FILE = "extraction_errors.json"
 
@@ -39,6 +41,9 @@ MIN_TEXT_CHARS = 100
 # Upper bound on articles opened for one case (cases are usually 1-3 articles; a
 # widely covered crash can have more, and every link of a case should be opened).
 MAX_ARTICLES_PER_CASE = 20
+# Articles opened at the same time. page_fetcher spaces requests to one host, so articles
+# from different outlets overlap while each outlet is still approached politely.
+FETCH_WORKERS = 8
 
 # Redirect pages that don't contain the article (Google News needs JavaScript).
 AGGREGATOR_HOSTS = ("news.google.com",)
@@ -59,20 +64,33 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------
 
 def load_cases():
+    """One single-article "case" per finalized item (the structure process_case works on)."""
     data = read_json(INPUT_FILE)
     if data is None:
         raise FileNotFoundError(f"Input file not found or unreadable: {INPUT_FILE}")
-    if not isinstance(data, dict):
-        raise ValueError("Expected a JSON object.")
+    if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+        raise ValueError("Expected a JSON object with an 'items' list.")
 
     cases = []
-    for category in ("confirmed", "doubtful"):
-        items = data.get(category, [])
-        if not isinstance(items, list):
-            raise ValueError(f"'{category}' must contain a list.")
-        for case in items:
-            if isinstance(case, dict):
-                cases.append(dict(case, confidence=case.get("confidence") or category))
+    for item in data["items"]:
+        url = normalize_url(item.get("url")) if isinstance(item, dict) else None
+        if not url:
+            continue
+        cases.append({
+            "case_id": "item-" + hashlib.sha1(canonical_url(url).encode()).hexdigest()[:12],
+            "confidence": "finalized",
+            "open_first": url,
+            "title": item.get("title"),
+            "publisher": item.get("source_name"),
+            "sources": [{
+                "url": url,
+                "title": item.get("title"),
+                "description": item.get("description"),
+                "publisher": item.get("source_name"),
+                "published_at": item.get("published_date"),
+                "source_type": "news",
+            }],
+        })
     return cases
 
 
@@ -334,21 +352,49 @@ def process_case(case, attempts, decoded, now):
 # Run
 # --------------------------------------------------
 
+CHECKPOINT_FILE = module_data_dir(MODULE) / "progress.jsonl"
+PARTIAL_EVERY = 50  # write articles.json (marked incomplete) after this many more articles
+
+
+def input_checkpoint(cases):
+    """Articles finished by an interrupted run on the same input, if any."""
+    urls = "|".join(sorted(case["open_first"] for case in cases))
+    checkpoint = Checkpoint(CHECKPOINT_FILE, hashlib.sha1(urls.encode()).hexdigest())
+    if checkpoint.items:
+        logger.info("Resuming an interrupted run: %s of %s articles already done", len(checkpoint.items), len(cases))
+    return checkpoint
+
+
 def main():
-    now = utc_now()
+    now = reference_time()  # now, or the end of COLLECT_FROM..COLLECT_TO
     cases = load_cases()
+    checkpoint = input_checkpoint(cases)
     attempts = {}  # publisher/official URL -> result; fetched at most once per run
     decoded = {}   # Google News URL -> (publisher URL, error); decoded at most once
     all_articles, all_errors = [], []
 
     logger.info("Input file: %s", INPUT_FILE)
-    logger.info("Cases (confirmed + doubtful): %s", len(cases))
+    logger.info("Articles to open: %s", len(cases))
 
-    for index, case in enumerate(cases, start=1):
-        logger.info("[%s/%s] [%s] %s", index, len(cases), case.get("confidence"), case.get("case_id"))
+    def work(numbered_case):
+        index, case = numbered_case
+        done = checkpoint.get(case["case_id"])
+        if done is not None:
+            return done["articles"], done["errors"]
         articles, errors = process_case(case, attempts, decoded, now)
+        checkpoint.add(case["case_id"], {"articles": articles, "errors": errors})
+        logger.info("[%s/%s] %s: %s", index, len(cases), case.get("case_id"),
+                    ", ".join(a["fetch_status"] or "?" for a in articles) or "no article")
+        return articles, errors
+
+    for articles, errors in parallel_map(work, enumerate(cases, start=1), FETCH_WORKERS):  # input order
         all_articles.extend(articles)
         all_errors.extend(errors)
+        if len(all_articles) // PARTIAL_EVERY != (len(all_articles) - len(articles)) // PARTIAL_EVERY:
+            write_stage_json(MODULE, ARTICLES_FILE, {
+                "run_at": iso(utc_now()), "input_file": str(INPUT_FILE), "complete": False,
+                "articles": all_articles,
+            })
 
     fetch_counts = Counter(a["fetch_status"] for a in all_articles)
     decisions = Counter(a["filter_decision"] for a in all_articles)
@@ -368,12 +414,14 @@ def main():
     }
 
     articles_file = write_stage_json(MODULE, ARTICLES_FILE, {
-        "run_at": iso(now),
+        "run_at": iso(utc_now()),
         "input_file": str(INPUT_FILE),
+        "complete": True,
         "summary": summary,
         "articles": all_articles,
     })
     errors_file = write_stage_json(MODULE, ERRORS_FILE, all_errors)
+    checkpoint.clear()  # the real output is written; the next run starts fresh
 
     logger.info("EXTRACTION COMPLETE: %s", summary)
     logger.info("Articles: %s", articles_file)

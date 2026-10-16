@@ -1,6 +1,7 @@
 
 """Shared HTTP client: one session, retries for temporary errors, per-host delay."""
 
+import threading
 import time
 from urllib.parse import urlsplit
 
@@ -12,10 +13,12 @@ from config.settings import BROWSER_USER_AGENT, REQUEST_DELAY_SECONDS, REQUEST_T
 
 
 class HttpClient:
-    def __init__(self, delay_seconds=REQUEST_DELAY_SECONDS, timeout=REQUEST_TIMEOUT_SECONDS):
+    def __init__(self, delay_seconds=REQUEST_DELAY_SECONDS, timeout=REQUEST_TIMEOUT_SECONDS, host_delays=None):
         self.delay_seconds = delay_seconds
+        self.host_delays = host_delays or {}   # host -> delay, for hosts that tolerate faster requests
         self.timeout = timeout
-        self._last_request = {}
+        self._next_slot = {}
+        self._lock = threading.Lock()
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": USER_AGENT,
@@ -34,13 +37,16 @@ class HttpClient:
         self.session.mount("http://", adapter)
 
     def _wait_for_host(self, url):
+        """Reserve the next request slot for the host, then wait for it. Safe across threads:
+        threads asking for the same host are spaced `delay` apart, different hosts do not wait."""
         host = urlsplit(url).netloc
-        last = self._last_request.get(host)
-        if last is not None:
-            remaining = self.delay_seconds - (time.monotonic() - last)
-            if remaining > 0:
-                time.sleep(remaining)
-        self._last_request[host] = time.monotonic()
+        delay = self.host_delays.get(host, self.delay_seconds)
+        with self._lock:
+            now = time.monotonic()
+            slot = max(now, self._next_slot.get(host, 0.0))
+            self._next_slot[host] = slot + delay
+        if slot > now:
+            time.sleep(slot - now)
 
     def get(self, url, headers=None):
         """GET a URL. Raises requests.RequestException (incl. HTTPError for 4xx/5xx).
