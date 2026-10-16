@@ -88,14 +88,21 @@ def split_google_title(title, publisher):
 
 
 def records_from_feed(feed, content, now, hours, fetcher, result):
-    """Parse one feed. Returns (records, items_seen, skipped_counts).
-
-    Skip reasons and a few example titles per reason are written to `result`.
-    Everything that can be decided from the feed item alone (topic, publication
-    date, out-of-state place) is decided before the article page is fetched.
-    """
+    """Parse one feed. Returns (records, items_seen, skipped_counts)."""
     parsed = feedparser.parse(content)
     feed_title = parsed.feed.get("title") or feed["name"]
+    return records_from_items(feed, parsed.entries, feed_title, now, hours, fetcher, result)
+
+
+def records_from_items(feed, entries, feed_title, now, hours, fetcher, result):
+    """Filter feed items into records. Returns (records, items_seen, skipped_counts).
+
+    Items are feedparser entries, or dicts with the same keys (title, link, summary,
+    published, content) built from search results (see collectors/tavily.py).
+    Skip reasons and a few example titles per reason are written to `result`.
+    Everything that can be decided from the item alone (topic, publication date,
+    out-of-state place) is decided before the article page is fetched.
+    """
     is_google = feed.get("kind") == "google_news_rss"
     records = []
     skipped = Counter()
@@ -107,7 +114,7 @@ def records_from_feed(feed, content, now, hours, fetcher, result):
     query = feed.get("query")
     raw_items = result.setdefault("raw_items", [])
 
-    for item in parsed.entries:
+    for item in entries:
         raw_items.append(raw_item(item, feed))
         title = (item.get("title") or "").strip()
         url = normalize_link(item.get("link"), feed["url"])
@@ -162,12 +169,12 @@ def records_from_feed(feed, content, now, hours, fetcher, result):
         if published_at is None:
             reasons.append("publication date missing in feed; crash date taken from story text only")
         if article["page_extraction"] in ("blocked", "failed"):
-            reasons.append(f"article page unavailable ({article['fetch_error']}); RSS text used")
+            reasons.append(f"article page unavailable ({article['fetch_error']}); {feed.get('text_label', 'RSS')} text used")
 
         records.append(make_record(
             source_name=feed["name"],
-            source_type="google_news_rss" if is_google else "rss",
-            collection_method="rss",
+            source_type=feed["kind"],  # rss | google_news_rss | tavily_search
+            collection_method=feed.get("collection_method", "rss"),
             title=title,
             url=url,
             collected_at=now,
@@ -196,7 +203,7 @@ def records_from_feed(feed, content, now, hours, fetcher, result):
             **location,
         ))
 
-    return records, len(parsed.entries), skipped
+    return records, len(entries), skipped
 
 
 def collect_rss_sources(client, now, hours=LOOKBACK_HOURS):

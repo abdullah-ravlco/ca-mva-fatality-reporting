@@ -9,7 +9,9 @@ fingerprints) when it is installed, otherwise plain requests. Handles:
 """
 
 import re
+import threading
 import time
+from collections import Counter
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlsplit
 
@@ -56,7 +58,15 @@ BLOCK_PAGE_MARKERS = [
     )),
 ]
 
-_last_request_by_host = {}
+_next_slot_by_host = {}
+_slot_lock = threading.Lock()
+
+# After this many timeouts / HTTP 429s from one host in a run, stop spending time on it:
+# no longer timeout, no retry, no Retry-After wait.
+HOST_FAILURE_LIMIT = 2
+FAST_READ_TIMEOUT_SECONDS = 12
+_host_timeouts = Counter()
+_host_rate_limits = Counter()
 
 
 class PageFetchError(Exception):
@@ -66,13 +76,15 @@ class PageFetchError(Exception):
 
 
 def _wait_for_host(url):
+    """Space requests to one host MIN_SECONDS_PER_HOST apart; safe across threads (different
+    hosts never wait for each other)."""
     host = urlsplit(url).netloc
-    last = _last_request_by_host.get(host)
-    if last is not None:
-        wait = MIN_SECONDS_PER_HOST - (time.monotonic() - last)
-        if wait > 0:
-            time.sleep(wait)
-    _last_request_by_host[host] = time.monotonic()
+    with _slot_lock:
+        now = time.monotonic()
+        slot = max(now, _next_slot_by_host.get(host, 0.0))
+        _next_slot_by_host[host] = slot + MIN_SECONDS_PER_HOST
+    if slot > now:
+        time.sleep(slot - now)
 
 
 def http_get(url, timeout=READ_TIMEOUT_SECONDS, profile="chrome", accept=None):
@@ -155,16 +167,20 @@ def _diagnostics(url, response, profile):
 
 def _get_with_retries(url, profile):
     """GET with one longer-timeout retry and one Retry-After wait on HTTP 429."""
-    waited_for_429 = False
-    timeout = READ_TIMEOUT_SECONDS
+    host = urlsplit(url).netloc
+    waited_for_429 = _host_rate_limits[host] >= HOST_FAILURE_LIMIT
+    slow_host = _host_timeouts[host] >= HOST_FAILURE_LIMIT
+    timeout = FAST_READ_TIMEOUT_SECONDS if slow_host else READ_TIMEOUT_SECONDS
 
     while True:
         try:
             response = http_get(url, timeout=timeout, profile=profile)
         except Exception as exc:
-            if _is_timeout(exc) and timeout != RETRY_READ_TIMEOUT_SECONDS:
-                timeout = RETRY_READ_TIMEOUT_SECONDS
-                continue
+            if _is_timeout(exc):
+                _host_timeouts[host] += 1
+                if not slow_host and timeout != RETRY_READ_TIMEOUT_SECONDS:
+                    timeout = RETRY_READ_TIMEOUT_SECONDS
+                    continue
             raise PageFetchError(
                 f"{'Read timeout' if _is_timeout(exc) else 'Request failed'}: {exc}",
                 {
@@ -176,6 +192,8 @@ def _get_with_retries(url, profile):
                 },
             ) from exc
 
+        if response.status_code == 429:
+            _host_rate_limits[host] += 1
         if response.status_code == 429 and not waited_for_429:
             delay = _retry_after_seconds(response)
             if delay <= MAX_RETRY_AFTER_SECONDS:

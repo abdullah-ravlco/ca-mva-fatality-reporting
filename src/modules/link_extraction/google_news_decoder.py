@@ -17,6 +17,7 @@ failures are reported, never guessed.
 import base64
 import json
 import re
+import threading
 import time
 from urllib.parse import quote, urlsplit
 
@@ -25,7 +26,7 @@ from bs4 import BeautifulSoup
 
 
 BATCH_URL = "https://news.google.com/_/DotsSplashUi/data/batchexecute"
-MIN_SECONDS_BETWEEN_CALLS = 1.5  # Google rate-limits bursts (HTTP 429)
+MIN_SECONDS_BETWEEN_CALLS = 0.4  # Google rate-limits bursts (HTTP 429); calls are spaced this far apart
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -36,7 +37,9 @@ HEADERS = {
 }
 URL_IN_BYTES_RE = re.compile(rb"https?://[\x21-\x7e]+")
 
-_last_call = [0.0]
+_next_call = [0.0]
+_throttle_lock = threading.Lock()
+RETRY_429_SECONDS = 8
 
 
 class GoogleNewsDecodeError(Exception):
@@ -54,10 +57,23 @@ def article_id(url):
 
 
 def _throttle():
-    wait = MIN_SECONDS_BETWEEN_CALLS - (time.monotonic() - _last_call[0])
-    if wait > 0:
-        time.sleep(wait)
-    _last_call[0] = time.monotonic()
+    """Space calls to Google MIN_SECONDS_BETWEEN_CALLS apart, across all threads."""
+    with _throttle_lock:
+        now = time.monotonic()
+        slot = max(now, _next_call[0])
+        _next_call[0] = slot + MIN_SECONDS_BETWEEN_CALLS
+    if slot > now:
+        time.sleep(slot - now)
+
+
+def _get(page, timeout):
+    """GET with one pause-and-retry when Google answers 429."""
+    for attempt in range(2):
+        _throttle()
+        response = requests.get(page, headers=HEADERS, timeout=timeout)
+        if response.status_code != 429 or attempt:
+            return response
+        time.sleep(RETRY_429_SECONDS)
 
 
 def _decode_old_format(gn_id):
@@ -75,9 +91,8 @@ def _decode_old_format(gn_id):
 def _signature_and_timestamp(gn_id, timeout):
     """Read data-n-a-sg / data-n-a-ts from Google's article page."""
     for page in (f"https://news.google.com/articles/{gn_id}", f"https://news.google.com/rss/articles/{gn_id}"):
-        _throttle()
         try:
-            response = requests.get(page, headers=HEADERS, timeout=timeout)
+            response = _get(page, timeout)
         except requests.RequestException:
             continue
         if not response.ok:
@@ -100,17 +115,21 @@ def _batchexecute(gn_id, signature, timestamp, timeout):
     request_body = [[["Fbv4je", json.dumps(inner, separators=(",", ":"))]]]
     payload = "f.req=" + quote(json.dumps(request_body, separators=(",", ":")))
 
-    _throttle()
     try:
-        response = requests.post(
-            BATCH_URL,
-            data=payload,
-            headers=dict(HEADERS, **{
-                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-                "Referer": "https://news.google.com/",
-            }),
-            timeout=timeout,
-        )
+        for attempt in range(2):
+            _throttle()
+            response = requests.post(
+                BATCH_URL,
+                data=payload,
+                headers=dict(HEADERS, **{
+                    "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                    "Referer": "https://news.google.com/",
+                }),
+                timeout=timeout,
+            )
+            if response.status_code != 429 or attempt:
+                break
+            time.sleep(RETRY_429_SECONDS)
     except requests.RequestException as exc:
         raise GoogleNewsDecodeError(f"batchexecute request failed: {exc}") from exc
     if not response.ok:

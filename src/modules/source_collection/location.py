@@ -82,7 +82,20 @@ CA_INTERSTATE_NUMBERS = {
 INTERSTATE_RE = re.compile(r"\b(?:I-|Interstate\s+)(\d{1,3})\b")
 
 # Other places that headlines name without "in <State>".
-OTHER_PLACES = ["Honolulu", "Olathe", "Kansas City", "Salt Lake City", "Boise", "Portland", "Seattle", "Phoenix"]
+OTHER_PLACES = [
+    "Honolulu", "Olathe", "Kansas City", "Salt Lake City", "Boise", "Portland", "Seattle", "Phoenix",
+    # Major US cities outside California (ambiguous names such as Glendale or Ontario are left out).
+    "Orlando", "Miami", "Tampa", "Jacksonville", "San Antonio", "Houston",
+    "Fort Worth", "El Paso", "Atlanta", "Chicago", "Denver", "New York City", "Philadelphia",
+    "Boston", "Detroit", "Nashville", "Tucson", "Albuquerque", "Minneapolis",
+    "Cleveland", "Pittsburgh", "Baltimore", "Indianapolis", "Louisville", "Memphis",
+    "Oklahoma City", "Omaha", "St. Louis", "New Orleans", "Anchorage", "Cincinnati", "Milwaukee",
+    "Raleigh", "Long Island", "Brooklyn", "Staten Island", "Syracuse",
+    # Outside the United States.
+    "Canada", "Canadian", "Calgary", "Edmonton", "Toronto", "Vancouver", "Winnipeg", "Montreal",
+    "Ottawa", "Alberta", "British Columbia", "Quebec", "Mexico City", "Queensland", "Australia",
+    "United Kingdom", "England", "Scotland", "Ireland", "India", "Philippines", "Indonesia",
+]
 STATE_ABBREVIATIONS = r"N\.J\.|N\.Y\.|Pa\.|Mass\.|Conn\.|Md\.|Va\.|Fla\.|Ga\.|Tenn\.|Mich\.|Wis\.|Minn\.|Ill\."
 RESIDENT_NOUNS = (
     r"man|men|woman|women|driver|motorist|resident|residents|teen|boy|girl|couple|family|"
@@ -105,15 +118,28 @@ ROAD_RE = re.compile(
     r"\b(?:I-\d{1,3}|Interstate\s+\d{1,3}|(?:State\s+)?(?:Route|Highway|Hwy\.?)\s+\d{1,3}"
     r"|SR-?\d{1,3}|US-?\d{1,3}|U\.S\.\s+\d{1,3}|(?:\d{1,3}|[A-Z][a-z]+)\s+Freeway)\b"
 )
+# Two-letter codes written after a comma ("Tulsa, OK"); codes that are also common words
+# (IN, OR, ME, OK, HI, ID, LA) are left out.
+STATE_CODES = (
+    "TX|FL|GA|NC|SC|TN|AL|MS|AZ|NV|UT|CO|NM|WA|NY|NJ|PA|IL|MI|MN|WI|MO|KS|NE|IA|AR|KY|VA|WV|MD|MA|CT"
+)
 # Another state only counts when used as a place: "in Arizona", "near Las Vegas", ", Texas",
 # "western Kansas", "Kansas man", "N.J. motorcyclist", "Honolulu parking garage".
+STREET_WORDS = r"St|Street|Ave|Avenue|Blvd|Boulevard|Rd|Road|Dr|Drive|Way|Ln|Lane|Hwy|Highway|Pkwy|Ct|Court"
 OTHER_STATE_RE = re.compile(
-    rf"(?:\bin|\bnear|,)\s+({_alternation(OTHER_STATES)})\b"
-    rf"|\b(?:northern|southern|eastern|western|central)\s+({_alternation(OTHER_STATES)})\b"
-    rf"|\b({_alternation(OTHER_STATES)})\s+(?:{RESIDENT_NOUNS})\b"
+    rf"(?i:\bin|\bnear|\binto|,)\s+({_alternation(OTHER_STATES)})\b"
+    rf"|(?i:\b(?:northern|southern|eastern|western|central))\s+({_alternation(OTHER_STATES)})\b"
     rf"|(?<!\w)({STATE_ABBREVIATIONS})"
-    rf"|\b({_alternation(OTHER_PLACES)})\b",
+    rf"|,\s*({STATE_CODES})\b"
+    rf"|\b({_alternation(OTHER_PLACES)})\b"
+    # A bare state name is a place unless it is a street name ("Arizona Avenue"). "Nevada" is
+    # also a California county and city, so it needs one of the forms above.
+    rf"|\b({_alternation(s for s in OTHER_STATES if s not in ('Nevada', 'Washington state'))})\b(?!\s+(?:{STREET_WORDS}|{RESIDENT_NOUNS})\b)",
 )
+# "Kansas man", "Utah driver": where someone lives, which says little about where the crash was.
+# Counted by default (legacy behaviour); source collection ignores it so that "Utah man
+# identified in deadly crash in Kern River Valley" is not dropped.
+RESIDENT_STATE_RE = re.compile(rf"\b({_alternation(OTHER_STATES)})\s+(?:{RESIDENT_NOUNS})\b")
 # "from California", "California woman", "California-based": where someone lives. A region
 # ("Southern California woman") still counts as a place.
 RESIDENCE_RE = re.compile(
@@ -123,31 +149,78 @@ RESIDENCE_RE = re.compile(
 )
 
 
-def other_state_evidence(text):
+# "Marinette County", "Lucas County": a county that is not one of California's 58.
+COUNTY_PHRASE_RE = re.compile(r"\b((?:[A-Z][a-z]+\s+){0,2}[A-Z][a-z]+)\s+County\b")
+
+
+# News outlets based in other states or countries. Used only when the text has no explicit
+# California indicator, because a local station often leaves the state out of its headlines.
+OTHER_OUTLETS_RE = re.compile(
+    r"\b(?:WKMG|WESH|WFTV|WINK|WLOX|WHIO|WDTN|WKEF|WYMT|WBMA|KVOA|KLKN|KATC|KGW|KSL|KING\s?5|"
+    r"Spectrum News 13|FOX\s?35|FOX\s?2|FOX\s?19|FOX\s?59|CBS\s?17|News12|Denver Gazette|Cleveland\.com|"
+    r"NJ\.com|Syracuse\.com|MassLive|AL\.com|Daily Mail|BBC|Times of India|Queensland|"
+    r"Sunday Tribune|Journal & Topics|Orlando|Florida|Texas)\b",
+    re.IGNORECASE,
+)
+
+
+def is_other_state_outlet(name):
+    return bool(name and OTHER_OUTLETS_RE.search(name))
+
+
+def has_california_indicator(text):
+    """A explicit California word (California, CHP, Caltrans, a CA-only interstate, ", CA")."""
+    return bool(CA_STRONG_RE.search(RESIDENCE_RE.sub(" ", text or "")))
+
+
+def other_county_evidence(text):
+    """"<Name> County" where Name is not a California county, or None.
+
+    Title-case headlines put other words in front ("Killed In Marinette County"), so a phrase
+    counts as Californian when it ENDS with a California county name.
+    """
+    for match in COUNTY_PHRASE_RE.finditer(text):
+        phrase = match.group(1)
+        if not any(phrase.endswith(county) for county in CA_COUNTIES):
+            return match.group(0)
+    return None
+
+
+def other_state_evidence(text, residents=True):
     """The other-state place named in the text, or None."""
     match = OTHER_STATE_RE.search(text)
     if match:
         return next(group for group in match.groups() if group)
+    if residents:
+        match = RESIDENT_STATE_RE.search(text)
+        if match:
+            return match.group(1)
+    other_county = other_county_evidence(text)
+    if other_county:
+        return other_county
     for number in INTERSTATE_RE.finditer(text):
         if int(number.group(1)) not in CA_INTERSTATE_NUMBERS:
             return number.group(0)
     return None
 
 
-def detect_location(*texts):
-    """Return location_status plus county / place / road / evidence found in the texts."""
+def detect_location(*texts, residents=True):
+    """Return location_status plus county / place / road / evidence found in the texts.
+
+    residents=False ignores "<State> man"-style phrases as evidence of another place.
+    """
 
     text = " ".join(t for t in texts if t)
     county = COUNTY_RE.search(text)
     city = CITY_RE.search(text)
     road = ROAD_RE.search(text)
     strong = CA_STRONG_RE.search(RESIDENCE_RE.sub(" ", text))
-    other_state = other_state_evidence(text)
+    other_state = other_state_evidence(text, residents)
 
     evidence = None
     if strong:
         status, evidence = CALIFORNIA_CONFIRMED, strong.group(0)
-    elif county:
+    elif county and not other_state:
         status, evidence = CALIFORNIA_CONFIRMED, county.group(0)
     elif city and not other_state:
         status, evidence = CALIFORNIA_CONFIRMED, city.group(0)

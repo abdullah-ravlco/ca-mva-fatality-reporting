@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from zoneinfo import ZoneInfo
 
-from config.settings import TIMEZONE
+from config.settings import TIMEZONE, WINDOW_END
 
 PACIFIC = ZoneInfo(TIMEZONE)
 
@@ -28,6 +28,12 @@ DATE_PATTERNS = [
 
 def utc_now():
     return datetime.now(timezone.utc)
+
+
+def reference_time():
+    """The moment the lookback window is measured back from: the end of the COLLECT_FROM..COLLECT_TO
+    period when one is set, otherwise now."""
+    return WINDOW_END.astimezone(timezone.utc) if WINDOW_END else utc_now()
 
 
 def is_date_only(value):

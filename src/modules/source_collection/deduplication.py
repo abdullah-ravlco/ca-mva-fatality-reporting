@@ -22,6 +22,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from src.core.date_utils import parse_date
 from src.modules.source_collection.filters import normalize_title
 from src.modules.source_collection.incident_dates import NOTE_EARLIER
+from src.modules.source_collection.records import NEWS_SOURCE_TYPES
 
 
 TRACKING_PARAMS = {
@@ -135,7 +136,7 @@ def details_conflict(record_a, record_b):
 
 
 def is_news_record(record):
-    return record.get("source_type") in {"rss", "google_news_rss"}
+    return record.get("source_type") in NEWS_SOURCE_TYPES
 
 
 def publisher_key(record):
@@ -219,12 +220,15 @@ def merge_into(kept, dropped):
     return kept
 
 
-def deduplicate_records(records):
+def deduplicate_records(records, log=None):
     """
     Remove exact URL duplicates and near-duplicate copies from the same publisher.
 
     Similar headlines from different publishers are left alone: they are separate
     articles, grouped into one incident later by case_grouping.py.
+
+    When "log" is a list, one entry is appended for every copy that was dropped
+    (url, title, publisher, reason, duplicate_of).
     """
     unique = []
     seen_urls = {}
@@ -235,12 +239,14 @@ def deduplicate_records(records):
 
         # Ignore records without a usable URL.
         if not url_key:
+            if log is not None:
+                log.append(_log_entry(record, "missing_url", None))
             continue
 
         # First remove exact/canonical URL duplicates.
         if url_key in seen_urls:
             index = seen_urls[url_key]
-            unique[index] = _keep_better(unique[index], record)
+            unique[index] = _keep_better(unique[index], record, log, "same_url")
             continue
 
         duplicate_index = None
@@ -260,7 +266,7 @@ def deduplicate_records(records):
                     break
 
         if duplicate_index is not None:
-            kept = _keep_better(unique[duplicate_index], record)
+            kept = _keep_better(unique[duplicate_index], record, log, "same_publisher_similar_headline")
             unique[duplicate_index] = kept
             seen_urls[url_key] = duplicate_index
             continue
@@ -275,8 +281,22 @@ def deduplicate_records(records):
     return unique
 
 
-def _keep_better(existing, candidate):
+def _log_entry(dropped, reason, kept):
+    return {
+        "url": dropped.get("url"),
+        "title": dropped.get("title"),
+        "publisher": dropped.get("publisher"),
+        "reason": reason,
+        "duplicate_of": kept.get("url") if kept else None,
+    }
+
+
+def _keep_better(existing, candidate, log=None, reason=None):
     """Return the better of two duplicates, with the other merged into it."""
     if record_quality(candidate) > record_quality(existing):
-        return merge_into(candidate, existing)
-    return merge_into(existing, candidate)
+        kept, dropped = candidate, existing
+    else:
+        kept, dropped = existing, candidate
+    if log is not None:
+        log.append(_log_entry(dropped, reason, kept))
+    return merge_into(kept, dropped)
