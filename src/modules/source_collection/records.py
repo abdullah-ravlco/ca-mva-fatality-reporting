@@ -15,6 +15,9 @@ INCIDENT_DATE_UNVERIFIED = "incident_date_unverified"  # story is recent, crash 
 INCIDENT_OUTSIDE_WINDOW = "incident_outside_window"    # story is recent, crash is older
 REVIEW_LOCATION = "review_location"                  # crash date fine, California not confirmed
 
+# Source types whose status comes from the story text (see news_status).
+NEWS_SOURCE_TYPES = {"rss", "google_news_rss", "tavily_search"}
+
 
 def make_record(
     source_name,
@@ -112,7 +115,7 @@ def refresh_news_status(record, now, hours):
     whose own text says the crash happened earlier never becomes recent, even if a
     duplicate supplied a date.
     """
-    if record.get("source_type") not in ("rss", "google_news_rss"):
+    if record.get("source_type") not in NEWS_SOURCE_TYPES:
         return record
     says_earlier = record.get("incident_date_note_type") == NOTE_EARLIER
     incident_date = None if says_earlier else parse_date(record.get("incident_date"))
