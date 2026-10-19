@@ -37,7 +37,9 @@ Logs go to the console and `logs/pipeline_<run_id>.log`.
 | 1 | `source_collection` | publisher RSS feeds, Google News RSS searches (statewide + ~50 California areas) and Tavily news search | `all_raw.json` (every item, unfiltered), `finalized_raw.json` (same-link duplicates, off-topic and old stories removed), `run_history.json` |
 | 2 | `link_extraction` | `finalized_raw.json` (every item is opened) | `articles.json` (one record per article: fetch status, text, page metadata, full-text filter decision), `extraction_errors.json` |
 | 3 | `incident_grouping` | `articles.json` (kept articles) | `incidents.json` (articles grouped per crash, candidate dates/locations, conflicts, uncertainties, grouping rationale) |
-| 4 | `lead_verification` | `incidents.json` | `verified_leads.json` (per incident: qualification verdict and reasons, incident facts, every person with name/age/residence/fault/impairment, quotes with `quote_verified`, agent log), `fetch_cache.json` |
+| 4 | `severity_screening` | `incidents.json` | `screened_incidents.json` (per incident: status, tags, reasons, facts JEV extracted with `*_quote_verified`, JEV's own status), `passed_leads.json` (only the passed leads, with screening result and full article content), `screening_errors.json` (every failed JEV call) |
+| 5 | `lead_verification` | `passed_leads.json` (only the leads that passed screening, with their full article content) | `verified_leads.json` (per incident: qualification verdict and reasons, incident facts, every person with name/age/residence/fault/impairment, quotes with `quote_verified`, agent log), `fetch_cache.json` |
+| 6 | `contact_enrichment` | `verified_leads.json` (verdict `qualifies`) | `contacts.json` and `contacts.csv` (one row per relative) (per deceased person: match status, date of birth, last address, phones, relatives with relationship, address, phones), `contacts_details.json` (candidates, match reasons, lookups), `searchbug_errors.json` |
 
 Every run is also kept in `data/runs/<run_id>/<stage>/`.
 
@@ -78,15 +80,35 @@ dropped for each reason, finalized, Google links resolved). The same entry is sa
   nothing conflicts (date, place, county, case number) and there is positive evidence
   (similar headlines, same place/road and date, same victim age and type, overlapping text).
   Victim type and age never split an incident: one crash can have several victims.
-- **Lead verification** (stage 4) is an agent (`agent.py`). The model gets the full text of an
+- **Severity screening** (stage 4) sends the full text of every article of an incident to JEV
+  (`JEV_API_URL`, `JEV_API_KEY`, `JEV_MODEL` in `.env`; OpenAI chat-completions format). JEV
+  extracts the facts and proposes a status; `decision.py` recomputes it from the facts:
+  `qualified`, `victim_identity_unidentified` (name unknown), `fault_unidentified` (fault unknown),
+  or `dropped` with a `drop_reason` (codes + text). Drop codes: ruled out by the evidence
+  (`injury_not_catastrophic`, `no_other_party`, `victim_at_fault`, `own_driver_at_fault`,
+  `victim_impaired_driver`) or not enough to qualify (`injury_not_reported`, `other_party_unclear`,
+  `conflicting_reports`, `crash_details_missing`, `age_missing`, `name_and_fault_unknown`,
+  `no_victim_reported`). Each victim is judged separately; the incident takes the best result.
+  A death is always catastrophic; "critical condition" / "life-threatening" count as catastrophic.
+  Only non-dropped incidents go to lead verification. Every JEV failure is logged with its HTTP
+  status, response excerpt, request id, attempts and a hint; 429/5xx/timeouts are retried. Failed
+  incidents are `screening_failed` and retried next run.
+- **Lead verification** (stage 5) is an agent (`agent.py`). The model gets the full text of an
   incident's articles and decides whether to search the web (`web_search`), read more pages
   (`fetch_page`) or return the structured result (`schema.py`). If it answers without searching
   while key facts are missing, it is pushed once to search. Each quote is then checked against
   the page it cites (`quote_verified`). `qualification.py` decides the verdict from the facts:
   it does **not** qualify with no death, no other party involved (single-vehicle), every deceased
   person impaired or at fault, not a road crash, outside California or outside the window;
-  it **qualifies** with a death, another party, and a deceased person who was not impaired or at
-  fault (open items such as "fault not yet reported" are listed); otherwise **needs_review**.
+  it **qualifies** with a death, another party involved and at fault, and a deceased person who
+  was not impaired or at fault; **fault_unidentified** when the other party's fault is not
+  established (under investigation, a driver's medical emergency); otherwise **needs_review**.
+  Before deciding, `checks.py` removes claims the quotes do not support and records each
+  correction: "not a road crash" for a vehicle crash (a car striking a person, a building or a
+  home is a road crash), "cited or arrested" without a quote saying so, "the other party was at
+  fault" without a quote showing what they did, and a residence taken from the crash location.
+  `python -m src.modules.lead_verification.pipeline --reassess` re-decides saved leads with the
+  current rules without calling the model (`--redecide` does the same for severity screening).
   Unchanged incidents are not analysed again.
 
 ## Policies
@@ -101,6 +123,11 @@ dropped for each reason, finalized, Google links resolved). The same entry is sa
   (stated by authorities, the other party cited or arrested, circumstances described, or none)
   and a quote. It decides the verdict only when a deceased person is reported at fault or
   impaired; unknown fault stays an open item. It is not a legal determination.
-- **Personal data.** Only what public sources state is recorded. Residence is a city as
-  written in a source; home addresses are not searched for, and people-search, property
-  and social-media sites are never used as sources.
+- **Personal data.** Stages 1-5 record only what public news and official sources state.
+  `contact_enrichment` then looks up the deceased person and their relatives in SearchBug (a paid
+  people-search service; the account's permissible purpose must cover this use). A SearchBug record
+  is used only when the name and the age or a death record agree; several candidates are left as
+  `ambiguous` for a person to choose, never picked automatically. Relationships come from SearchBug
+  or from the articles' own words, otherwise "relationship not stated". Results are leads, not
+  verified identities: confirm identity and relationship before any contact, and follow the rules
+  that apply to contacting families.

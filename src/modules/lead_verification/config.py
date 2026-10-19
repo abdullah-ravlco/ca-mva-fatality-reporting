@@ -4,14 +4,16 @@ import re
 
 from config.settings import module_data_dir
 
-# Input from the incident_grouping step.
-INCIDENTS_FILE = module_data_dir("incident_grouping") / "incidents.json"
+# Input: the leads that passed severity screening, with the full content of their articles.
+from src.modules.severity_screening.config import PASSED_LEADS_FILE as LEADS_FILE  # noqa: E402
 
 # Outputs.
 MODULE = "lead_verification"
 DATA_DIR = module_data_dir(MODULE)
-OUTPUT_NAME = "verified_leads.json"
+OUTPUT_NAME = "verified_leads.json"            # short: only the required fields, one entry per lead
 OUTPUT_FILE = DATA_DIR / OUTPUT_NAME
+DETAILS_NAME = "verified_leads_details.json"   # everything: quotes, every person, agent log
+DETAILS_FILE = DATA_DIR / DETAILS_NAME
 FETCH_CACHE_FILE = DATA_DIR / "fetch_cache.json"
 
 # The agent (agent.py): per incident, how many model calls (tool round trips) and web searches.

@@ -5,11 +5,11 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
 YesNo = Literal["yes", "no", "unknown"]
-Verdict = Literal["qualifies", "does_not_qualify", "needs_review"]
+Verdict = Literal["qualifies", "fault_unidentified", "does_not_qualify", "needs_review"]
 
 REASONS = (
     "no_death",                       # nobody died, or no source says anyone died
-    "not_a_road_crash",               # medical event, suicide, intentional act, non-road incident
+    "not_a_road_crash",               # no vehicle in motion caused the death (illness, homicide, suicide...)
     "single_vehicle_no_other_party",  # no other driver/vehicle could be responsible
     "deceased_impaired",              # every deceased person was reported impaired (DUI, drunk, drugs)
     "deceased_at_fault",              # every deceased person was reported at fault
@@ -81,9 +81,15 @@ class IncidentFacts(BaseModel):
     crash_type: Literal["single_vehicle", "multi_vehicle", "pedestrian_or_cyclist_struck", "unknown"] = "unknown"
     other_party_involved: YesNo = "unknown"
     other_party_description: Optional[str] = None
+    # Did the other party cause the crash, as the sources report it?
+    other_party_at_fault: YesNo = "unknown"
+    other_party_fault_basis: Literal[FAULT_BASES] = "none"
+    other_party_fault_source_url: Optional[str] = None
+    other_party_fault_quote: Optional[str] = None
     summary: Optional[str] = None
 
-    @field_validator("city", "county", "road", "other_party_description", "summary")
+    @field_validator("city", "county", "road", "other_party_description", "other_party_fault_source_url",
+                     "other_party_fault_quote", "summary")
     @classmethod
     def as_text(cls, value):
         return _text(value)

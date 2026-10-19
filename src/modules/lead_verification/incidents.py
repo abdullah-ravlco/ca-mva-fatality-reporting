@@ -1,4 +1,4 @@
-"""Load the grouped incidents (incident_grouping output) and their already-fetched articles."""
+"""Load the leads that passed severity screening (passed_leads.json) and their already-fetched articles."""
 
 import hashlib
 import re
@@ -6,7 +6,7 @@ import unicodedata
 from urllib.parse import urlsplit
 
 from src.core.outputs import read_json
-from src.modules.lead_verification.config import INCIDENTS_FILE, LAW_FIRM_HOST_RE, OFFICIAL_HOST_RE
+from src.modules.lead_verification.config import LAW_FIRM_HOST_RE, LEADS_FILE, OFFICIAL_HOST_RE
 
 
 NAME_TITLE_RE = re.compile(r"^(officer|deputy|sgt\.?|sergeant|dr\.?|mr\.?|mrs\.?|ms\.?)\s+", re.I)
@@ -60,25 +60,23 @@ def is_law_firm(url):
 # --------------------------------------------------
 
 def load_incidents():
-    data = read_json(INCIDENTS_FILE)
-    if not isinstance(data, dict) or not isinstance(data.get("incidents"), list):
-        raise FileNotFoundError(f"Incidents file missing or invalid: {INCIDENTS_FILE}")
+    """The leads in passed_leads.json, in the order severity screening wrote them."""
+    data = read_json(LEADS_FILE)
+    if not isinstance(data, dict) or not isinstance(data.get("leads"), list):
+        raise FileNotFoundError(f"Leads file missing or invalid: {LEADS_FILE} (run severity_screening first)")
 
     incidents = []
-    for record in data["incidents"]:
-        articles = record.get("articles") or []
+    for lead in data["leads"]:
+        articles = lead.get("articles") or []
         urls = {u for a in articles for u in (a.get("url"), a.get("rss_url"), a.get("final_url")) if u}
         incidents.append({
-            "incident_key": record["incident_id"],
-            "names": [],  # filled from the first LLM pass
+            "incident_key": lead["incident_id"],
+            "names": [],
             "headlines": [a.get("title") for a in articles if a.get("title")],
             "source_urls_set": urls,
             "articles": articles,
-            "grouping": {
-                key: record.get(key)
-                for key in ("source_case_ids", "candidate_incident_dates", "locations", "conflicts",
-                            "uncertainties", "grouping_rationale", "publishers")
-            },
+            "grouping": lead.get("grouping") or {},
+            "screening": lead.get("screening") or {},
         })
     return incidents
 

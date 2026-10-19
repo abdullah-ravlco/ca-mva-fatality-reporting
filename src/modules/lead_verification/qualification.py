@@ -6,13 +6,17 @@ the same every time and can be explained:
   does not qualify when
     - nobody is reported killed                          (no_death)
     - no other party could be responsible: a single-vehicle crash with no other driver
-      or vehicle                                         (single_vehicle_no_other_party)
+      or vehicle, including a passenger killed in a crash their own driver caused
+                                                         (single_vehicle_no_other_party)
     - every deceased person was reported impaired        (deceased_impaired)
     - every deceased person was reported at fault        (deceased_at_fault)
     - outside California / older than the window         (outside_california, outside_window)
     - the agent says it is not a road crash              (not_a_road_crash)
-  qualifies when none of that applies and at least one deceased person is a possible claimant
-  needs_review when the facts needed are missing (no crash date/location, no known death...).
+  qualifies when none of that applies, at least one deceased person is a possible claimant, and the
+    sources show the other party caused the crash
+  fault_unidentified when everything qualifies except that the other party's fault is not
+    established (under investigation, a driver's medical emergency, not reported)
+  needs_review when other facts needed are missing (no crash date/location, no known death...).
 
 Fault is whatever the sources report. It is not a legal determination.
 """
@@ -59,8 +63,8 @@ def assess(result, today):
     crash_date = parse_date(incident.date.value)
     if crash_date is None:
         missing.append("crash date")
-    elif (today - crash_date.date()).days > math.ceil(LOOKBACK_HOURS / 24):
-        reasons.append("outside_window")
+    elif not 0 <= (today - crash_date.date()).days <= math.ceil(LOOKBACK_HOURS / 24):
+        reasons.append("outside_window")  # older than the window (or dated in the future)
     if not place:
         missing.append("crash location")
 
@@ -82,15 +86,18 @@ def assess(result, today):
             reasons.append("insufficient_information")
     elif reasons:
         verdict = "does_not_qualify"
-    elif result.assessment.verdict == "does_not_qualify":
-        verdict, reasons = "needs_review", ["insufficient_information"]  # agent doubts it, facts do not show why
+    elif result.assessment.verdict == "does_not_qualify" and result.assessment.reasons:
+        # the agent gives a reason the facts do not show: a person should look
+        verdict, reasons = "needs_review", ["insufficient_information"]
+    elif incident.other_party_at_fault != "yes":
+        verdict = "fault_unidentified"
     else:
         verdict = "qualifies"
 
     open_items = []
     for person in deceased:
         label = person.name.value or "deceased person"
-        if person.at_fault == "unknown":
+        if person.at_fault == "unknown" and incident.other_party_at_fault != "yes":
             open_items.append(f"fault not yet reported for {label}")
         if person.impaired == "unknown":
             open_items.append(f"impairment not reported for {label}")
@@ -99,7 +106,7 @@ def assess(result, today):
         "verdict": verdict,
         "reasons": list(dict.fromkeys(reasons)),
         "missing": missing,
-        "open_items": open_items if verdict == "qualifies" else [],
+        "open_items": open_items if verdict in ("qualifies", "fault_unidentified") else [],
         "explanation": result.assessment.explanation,
         "agent_verdict": result.assessment.verdict,
         "per_person": per_person,
