@@ -200,7 +200,8 @@ def test_short_output_has_only_the_required_fields():
                           "other_party", "other_party_at_fault", "deceased", "missing", "corrections", "sources"}
     assert short["verdict"] == "qualifies" and short["crash_date"] == "2026-10-12"
     assert short["deceased"] == [{"name": "Maria Lopez", "age": 34, "residence": "Fresno", "role": "pedestrian",
-                                  "at_fault": "no", "fault_basis": "none", "impaired": "no"}]  # the injured driver is left out
+                                  "at_fault": "no", "fault_basis": "none", "fault_explanation": None,
+                                  "impaired": "no"}]  # the injured driver is left out
     assert short["sources"] == ["https://a.com/1"]
 
 

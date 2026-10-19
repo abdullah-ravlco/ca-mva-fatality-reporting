@@ -125,6 +125,7 @@ def compact(record):
                 "role": p.get("role"),
                 "at_fault": p.get("at_fault"),
                 "fault_basis": p.get("fault_basis"),
+                "fault_explanation": p.get("fault_explanation"),
                 "impaired": p.get("impaired"),
             }
             for p in deceased
