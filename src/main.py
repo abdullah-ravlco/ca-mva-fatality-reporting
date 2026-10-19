@@ -6,7 +6,11 @@ Runs the pipeline stages in order:
   2. link_extraction    - open every item of finalized_raw.json, read text + page metadata,
                           re-check crash date / location / relevance on the full text
   3. incident_grouping  - group the kept articles into incidents (no LLM)
-  4. lead_verification  - one LLM analysis per incident, quote-checked against sources
+  4. severity_screening - JEV reads each incident; only catastrophic injuries caused by another
+                          party go on (qualified / identity or fault unidentified / needs review)
+  5. lead_verification  - an agent investigates each incident that passed screening
+  6. contact_enrichment - SearchBug: the deceased person's date of birth, address and phones, and
+                          their relatives' names, relationships, addresses and phones
 
 Each stage reads the previous stage's file in data/<stage>/; every run is also kept
 in data/runs/<run_id>/. The run stops at the first stage that fails, so later stages
@@ -24,16 +28,20 @@ import sys
 
 from src.core.logger import configure_logging
 from src.core.outputs import RUN_ID_ENV, new_run_id
+from src.modules.contact_enrichment import pipeline as contact_enrichment
 from src.modules.incident_grouping import pipeline as incident_grouping
 from src.modules.lead_verification import pipeline as lead_verification
 from src.modules.link_extraction import pipeline as link_extraction
+from src.modules.severity_screening import pipeline as severity_screening
 from src.modules.source_collection import pipeline as source_collection
 
 STAGES = {
     "source_collection": source_collection.main,
     "link_extraction": link_extraction.main,
     "incident_grouping": incident_grouping.main,
+    "severity_screening": severity_screening.main,
     "lead_verification": lead_verification.main,
+    "contact_enrichment": contact_enrichment.main,
 }
 
 STAGE_ORDER = list(STAGES)

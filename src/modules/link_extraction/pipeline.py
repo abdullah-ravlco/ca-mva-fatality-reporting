@@ -366,7 +366,7 @@ def input_checkpoint(cases):
 
 
 def main():
-    now = reference_time()  # now, or the end of COLLECT_FROM..COLLECT_TO
+    now = reference_time()
     cases = load_cases()
     checkpoint = input_checkpoint(cases)
     attempts = {}  # publisher/official URL -> result; fetched at most once per run

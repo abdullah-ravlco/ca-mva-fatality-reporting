@@ -1,14 +1,11 @@
 
 """Configuration for California road-fatality source collection."""
 
-from datetime import timedelta
 from urllib.parse import quote_plus
 
 from config.settings import (
     BROWSER_RETRY_ON_403,
     BROWSER_USER_AGENT,
-    COLLECT_FROM,
-    COLLECT_TO,
     LOOKBACK_HOURS,
     PUBLISHER_TIMEZONE,
     REQUEST_DELAY_SECONDS,
@@ -105,11 +102,7 @@ GOOGLE_NEWS_RSS_URL = (
 def google_news_feeds(hours=LOOKBACK_HOURS):
     """Build Google News RSS feeds for the configured lookback period."""
     days = max(1, -(-hours // 24))
-    if COLLECT_FROM and COLLECT_TO:
-        # A fixed period: Google's after:/before: operators (before is exclusive).
-        period = f"after:{COLLECT_FROM.isoformat()} before:{(COLLECT_TO + timedelta(days=1)).isoformat()}"
-    else:
-        period = f"when:{days}d"
+    period = f"when:{days}d"
 
     return [
         {

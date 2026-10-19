@@ -11,7 +11,7 @@ from datetime import timedelta
 import feedparser
 import requests
 
-from config.settings import COLLECT_FROM, COLLECT_TO, REQUEST_TIMEOUT_SECONDS, TAVILY_API_KEY
+from config.settings import REQUEST_TIMEOUT_SECONDS, TAVILY_API_KEY
 from src.core.date_utils import iso
 from src.core.parallel import parallel_map
 from src.modules.source_collection.collectors.rss import (
@@ -95,9 +95,8 @@ def search_tavily(query, api_key, now, hours):
         json={
             "query": query,
             "topic": "news",
-            "start_date": (COLLECT_FROM or (now - timedelta(hours=hours)).date()).isoformat(),
+            "start_date": (now - timedelta(hours=hours)).date().isoformat(),
             "max_results": TAVILY_MAX_RESULTS,
-            **({"end_date": COLLECT_TO.isoformat()} if COLLECT_TO else {}),
         },
         timeout=REQUEST_TIMEOUT_SECONDS,
     )
