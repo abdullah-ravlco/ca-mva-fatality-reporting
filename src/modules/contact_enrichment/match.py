@@ -7,7 +7,7 @@ also lived in a reported city or has a death record; otherwise it is "weak" (nam
 
   exactly one strong candidate              -> matched
   several strong candidates                 -> ambiguous   (a person chooses; never picked)
-  no strong, exactly one weak candidate     -> possible_match (a person confirms; relatives not fetched)
+  no strong, exactly one weak candidate     -> possible_match (details fetched; a person confirms)
   no strong, several weak candidates        -> ambiguous
   none                                      -> not_found
 """
@@ -115,6 +115,25 @@ RELATION_WORDS = [
     "brother", "sister", "grandmother", "grandfather", "grandson", "granddaughter", "aunt", "uncle",
     "cousin", "niece", "nephew",
 ]
+
+
+# Closest first: spouse, then children, then parents, then siblings, then everyone else.
+CLOSENESS = [
+    ("spouse", ("spouse", "husband", "wife", "partner", "domestic partner", "fiance", "fiancee", "fiancé", "fiancée",
+                "boyfriend", "girlfriend")),
+    ("child", ("child", "children", "son", "daughter", "stepson", "stepdaughter", "stepchild")),
+    ("parent", ("parent", "mother", "father", "mom", "dad", "stepmother", "stepfather", "stepparent")),
+    ("sibling", ("sibling", "brother", "sister", "half-brother", "half-sister", "stepbrother", "stepsister")),
+]
+
+
+def closeness(relationship):
+    """(rank, group) for a relationship label: 0 spouse, 1 child, 2 parent, 3 sibling, 4 anyone else."""
+    label = (relationship or "").strip().lower()
+    for rank, (group, words) in enumerate(CLOSENESS):
+        if label in words or label.rstrip("s") in words:
+            return rank, group
+    return len(CLOSENESS), "other"
 
 
 def relationship_from_articles(relative_names, texts):
