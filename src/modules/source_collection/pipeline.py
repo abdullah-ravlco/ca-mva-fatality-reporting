@@ -11,7 +11,7 @@ Every item has: published_date, source_name, title, url, description.
 import hashlib
 import logging
 
-from config.settings import COLLECT_FROM, COLLECT_TO, DATA_DIR
+from config.settings import DATA_DIR
 from src.core.checkpoint import Checkpoint
 from src.core.date_utils import iso, reference_time, utc_now
 from src.core.http_client import HttpClient
@@ -28,15 +28,15 @@ from src.modules.source_collection.sources import (
 logger = logging.getLogger(__name__)
 
 CHECKPOINT_FILE = DATA_DIR / "state" / "collection_progress.jsonl"
-# A rolling window ("the last 7 days") goes stale; a fixed period does not.
+# The window rolls forward, so a checkpoint older than this is not resumed.
 CHECKPOINT_MAX_AGE_HOURS = 6
 
 
 def collection_checkpoint():
     """Finished searches of an interrupted run for the same window and queries, if any."""
     queries = "|".join(GOOGLE_NEWS_QUERIES + TAVILY_QUERIES)
-    signature = f"{COLLECT_FROM}|{COLLECT_TO}|{LOOKBACK_HOURS}|{hashlib.sha1(queries.encode()).hexdigest()[:12]}"
-    checkpoint = Checkpoint(CHECKPOINT_FILE, signature, None if COLLECT_FROM else CHECKPOINT_MAX_AGE_HOURS)
+    signature = f"{LOOKBACK_HOURS}|{hashlib.sha1(queries.encode()).hexdigest()[:12]}"
+    checkpoint = Checkpoint(CHECKPOINT_FILE, signature, CHECKPOINT_MAX_AGE_HOURS)
     if checkpoint.items:
         logger.info("Resuming an interrupted run: %s searches already finished", len(checkpoint.items))
     return checkpoint
@@ -60,7 +60,7 @@ def partial_all_raw_writer(run_at, checkpoint):
 
 def main():
     run_at = iso(utc_now())
-    now = reference_time()  # now, or the end of COLLECT_FROM..COLLECT_TO
+    now = reference_time()
 
     checkpoint = collection_checkpoint()
     on_progress = partial_all_raw_writer(run_at, checkpoint)
