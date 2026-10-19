@@ -39,7 +39,7 @@ Logs go to the console and `logs/pipeline_<run_id>.log`.
 | 3 | `incident_grouping` | `articles.json` (kept articles) | `incidents.json` (articles grouped per crash, candidate dates/locations, conflicts, uncertainties, grouping rationale) |
 | 4 | `severity_screening` | `incidents.json` | `screened_incidents.json` (per incident: status, tags, reasons, facts JEV extracted with `*_quote_verified`, JEV's own status), `passed_leads.json` (only the passed leads, with screening result and full article content), `screening_errors.json` (every failed JEV call) |
 | 5 | `lead_verification` | `passed_leads.json` (only the leads that passed screening, with their full article content) | `verified_leads.json` (per incident: qualification verdict and reasons, incident facts, every person with name/age/residence/fault/impairment, quotes with `quote_verified`, agent log), `fetch_cache.json` |
-| 6 | `contact_enrichment` | `verified_leads.json` (verdict `qualifies`) | `contacts.json` and `contacts.csv` (one row per relative) (per deceased person: match status, date of birth, last address, phones, relatives with relationship, address, phones), `contacts_details.json` (candidates, match reasons, lookups), `searchbug_errors.json` |
+| 6 | `contact_enrichment` | `verified_leads.json` (verdict `qualifies`) | `contacts.json` and `contacts.csv` (one row per deceased person with up to 2 next of kin, closest first: spouse, children, parents, siblings, others) (per deceased person: match status, date of birth, last address, phones, relatives with relationship, address, phones), `contacts_details.json` (candidates, match reasons, lookups), `searchbug_errors.json` |
 
 Every run is also kept in `data/runs/<run_id>/<stage>/`.
 
@@ -127,7 +127,8 @@ dropped for each reason, finalized, Google links resolved). The same entry is sa
   `contact_enrichment` then looks up the deceased person and their relatives in SearchBug (a paid
   people-search service; the account's permissible purpose must cover this use). A SearchBug record
   is used only when the name and the age or a death record agree; several candidates are left as
-  `ambiguous` for a person to choose, never picked automatically. Relationships come from SearchBug
+  `ambiguous` for a person to choose, never picked automatically; a record that agrees on name and age
+  only is filled in but marked `possible_match` until a person confirms it. Relationships come from SearchBug
   or from the articles' own words, otherwise "relationship not stated". Results are leads, not
   verified identities: confirm identity and relationship before any contact, and follow the rules
   that apply to contacting families.

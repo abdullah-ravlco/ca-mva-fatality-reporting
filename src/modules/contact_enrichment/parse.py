@@ -166,14 +166,20 @@ def phones(node):
     unique = {}
     for phone in entries:
         if isinstance(phone, (str, int)):
-            number, kind = str(phone), None
+            number, kind, last_seen = str(phone), None, None
         else:
             number = next((str(phone[k]) for k in PHONE_KEYS if phone.get(k)), None)
             kind = next((str(phone[k]) for k in PHONE_TYPE_KEYS if phone.get(k)), None)
+            last_seen = _date(phone.get("lastDate"))
         digits = re.sub(r"\D", "", number or "")
         if len(digits) >= 10:
-            unique.setdefault(digits[-10:], {"number": digits[-10:], "type": kind})
+            unique.setdefault(digits[-10:], {"number": digits[-10:], "type": kind, "last_seen": last_seen})
     return list(unique.values())
+
+
+def most_recent_phones(phones, limit):
+    """The `limit` phones seen most recently (by lastDate), newest first; undated ones last."""
+    return sorted(phones or [], key=lambda p: p.get("last_seen") or "", reverse=True)[:limit]
 
 
 def emails(person):

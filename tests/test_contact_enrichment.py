@@ -47,7 +47,7 @@ def test_documented_fields_are_read():
     assert p["token"] == "tok-maria" and p["names"] == ["Maria Lopez"]
     assert p["dobs"] == [{"date": "1992-03-04", "age": 34}]
     assert p["addresses"][0]["address"] == "12 Elm St, FRESNO, CA 93701"      # most recent first
-    assert p["phones"] == [{"number": "5595550101", "type": "Wireless"}]
+    assert p["phones"] == [{"number": "5595550101", "type": "Wireless", "last_seen": None}]
     assert p["relatives"][0]["names"] == ["John Lopez"] and p["relatives"][0]["relationship"] == "Spouse"
 
 
@@ -200,14 +200,19 @@ def test_stage_writes_json_and_csv_and_reuses_the_cache(sandbox):
     assert maria["match"] == "matched" and maria["deceased"]["dob"] == "1992-03-04"
     john, rosa = maria["relatives"]
     assert (john["name"], john["relationship"], john["relationship_source"]) == ("John Lopez", "husband", "article")
-    assert john["phones"] == [{"number": "5595550199", "type": "Landline"}] and john["lookup"] == "found"
+    assert john["phones"] == [{"number": "5595550199", "type": "Landline", "last_seen": None}] and john["lookup"] == "found"
     assert rosa["relationship"] == "mother"
     assert by_name["Sam Doe"]["match"] == "not_found"
 
     rows = list(csv.DictReader((sandbox / "contact_enrichment" / "contacts.csv").open(encoding="utf-8-sig")))
-    assert [r["relative_name"] for r in rows] == ["John Lopez", "Rosa Diaz", ""]   # one row per relative
-    assert rows[0]["deceased_phones"] == "5595550101 (Wireless)" and rows[0]["relationship"] == "husband"
-    assert rows[2]["deceased_name"] == "Sam Doe" and rows[2]["match_status"] == "not_found"
+    assert [r["deceased_name"] for r in rows] == ["Maria Lopez", "Sam Doe"]           # one row per deceased person
+    maria_row = rows[0]
+    assert maria_row["relatives_on_record"] == "2" and maria_row["deceased_phones"] == "5595550101 (Wireless)"
+    assert (maria_row["next_of_kin_1_name"], maria_row["next_of_kin_1_relationship"]) == ("John Lopez", "husband")
+    assert (maria_row["next_of_kin_2_name"], maria_row["next_of_kin_2_relationship"]) == ("Rosa Diaz", "mother")
+    assert maria_row["next_of_kin_1_phones"] == "5595550199 (Landline)"
+    assert rows[1]["match_status"] == "not_found" and rows[1]["next_of_kin_1_name"] == ""
+    assert "next_of_kin_3_name" not in maria_row  # at most 2 next of kin
 
     paid = len(fake.calls)
     again = FakeSearchBug()
@@ -276,3 +281,56 @@ def test_p001_from_the_api_is_recognized():
     with pytest.raises(SearchBugError) as caught:
         client(reply(body={"error": "ERR P001: Too Many Results Found"})).search({"FNAME": "a", "LNAME": "b"})
     assert caught.value.kind == "too_many_results"
+
+
+def test_relatives_are_ordered_spouse_children_parents_siblings_others():
+    from src.modules.contact_enrichment.match import closeness
+    from src.modules.contact_enrichment.pipeline import closest_relatives
+
+    def rel(name, relationship):
+        return {"names": [name], "relationship": relationship, "token": None, "addresses": [], "phones": []}
+
+    found = [rel("Ann Lee", "In-Law"), rel("Bob Lopez", "Sibling"), rel("Carl Lopez", None), rel("Dora Lopez", "Parent"),
+             rel("Eli Lopez", "Spouse"), rel("Fay Lopez", "Child")]
+    ordered = closest_relatives(found, ["She is survived by her son, Carl Lopez."], limit=5)
+    # spouse, the two children (Carl is a son per the article), parent, sibling; the in-law is cut off
+    assert [r["names"][0] for r in ordered] == ["Eli Lopez", "Carl Lopez", "Fay Lopez", "Dora Lopez", "Bob Lopez"]
+    assert closeness("Wife") == (0, "spouse") and closeness("Child") == (1, "child")
+    assert closeness("brothers") == (3, "sibling") and closeness(None)[1] == "other"
+    # by default only the 2 closest are kept: spouse, then the first child
+    assert [r["names"][0] for r in closest_relatives(found, [], limit=2)] == ["Eli Lopez", "Fay Lopez"]
+
+
+def test_only_the_two_most_recent_phones_are_kept():
+    from src.modules.contact_enrichment.parse import most_recent_phones, phones
+
+    found = phones({"phones": {"phone": [
+        {"phoneNumber": "5550000001", "lastDate": {"day": "01", "month": "01", "year": "2019"}},
+        {"phoneNumber": "5550000002", "lastDate": {"day": "18", "month": "06", "year": "2026"}},
+        {"phoneNumber": "5550000003"},                                                     # no date: last
+        {"phoneNumber": "5550000004", "lastDate": "03/02/2024"},
+    ]}})
+    assert [p["number"] for p in most_recent_phones(found, 2)] == ["5550000002", "5550000004"]
+
+
+def test_possible_match_is_filled_in_but_keeps_its_status(sandbox):
+    class Elsewhere(FakeSearchBug):
+        def search(self, fields):
+            self.calls.append(fields)
+            if fields.get("LNAME") == "Lopez" and "CITY" not in fields:
+                return {"people": [person(city="LONG BEACH", relatives=[relative("John", "Lopez", "tok-john", "Spouse")])]}
+            if fields.get("reportToken") == "tok-john":
+                return FakeSearchBug().search(fields)
+            return {}
+
+    ce.main(Elsewhere())
+    rows = list(csv.DictReader((sandbox / "contact_enrichment" / "contacts.csv").open(encoding="utf-8-sig")))
+    maria = next(r for r in rows if r["deceased_name"] == "Maria Lopez")
+    assert maria["match_status"] == "possible_match"
+    assert maria["deceased_dob"] == "1992-03-04" and maria["next_of_kin_1_name"] == "John Lopez"
+    assert maria["next_of_kin_1_phones"] == "5595550199 (Landline)"
+
+
+def test_several_values_in_one_cell_are_separated_by_a_pipe():
+    from src.modules.contact_enrichment.pipeline import _phones
+    assert _phones([{"number": "5550000001", "type": "Mobile"}, {"number": "5550000002"}]) == "5550000001 (Mobile) | 5550000002"
