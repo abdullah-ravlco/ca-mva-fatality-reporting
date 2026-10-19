@@ -117,7 +117,8 @@ def _int(value):
     return int(match.group(0)) if match else None
 
 
-def address_text(address):
+def street_of(address):
+    """'1648 N Ogden Dr Apt 2' from fullStreet / line1-3 / the street parts."""
     line = " ".join(_text(address.get(k)) or "" for k in ("fullStreet", "line1", "line2", "line3")).strip()
     if not line:
         line = " ".join(str(address.get(k)).strip() for k in (
@@ -126,6 +127,11 @@ def address_text(address):
     unit = address.get("apt") or address.get("unit")
     if unit and str(unit) not in line:
         line += f" {unit}"
+    return line.strip() or None
+
+
+def address_text(address):
+    line = street_of(address) or ""
     place = ", ".join(p for p in (_text(address.get("city")), " ".join(
         p for p in (_text(address.get("state")), _text(address.get("zip"))) if p)) if p)
     return ", ".join(p for p in (line.strip(), place) if p) or None
@@ -136,6 +142,8 @@ def addresses(person):
     for address in items(person, "addresses"):
         out.append({
             "address": address_text(address),
+            "street": street_of(address),
+            "zip": _text(address.get("zip")),
             "city": _text(address.get("city")),
             "county": _text(address.get("county")),
             "state": _text(address.get("state")),
@@ -224,6 +232,7 @@ def person_record(person):
     return {
         "token": _text(person.get("reportToken")),
         "deceased_flag": is_deceased(person),
+        "gender": _text(person.get("gender")),
         "names": names(person),
         "dobs": dobs(person),
         "dods": dods(person),
