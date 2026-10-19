@@ -4,14 +4,16 @@
 Input:  data/lead_verification/verified_leads.json  (verdict "qualifies")
         data/severity_screening/passed_leads.json   (article text: relationships named in the news)
 Output: data/contact_enrichment/contacts.json         - short: one entry per deceased person
-        data/contact_enrichment/contacts.csv          - the same as a table: one row per relative
-                                                        (one row for a person with no relatives found)
+        data/contact_enrichment/contacts.csv          - the same as a table: one row per deceased person
+                                                        with up to 2 next of kin, closest first
+                                                        (spouse, children, parents, siblings, others)
         data/contact_enrichment/contacts_details.json - every candidate, match reasons, lookups made
         data/contact_enrichment/searchbug_errors.json - every failed SearchBug call
 
 Matching never guesses: a record is used only when the name agrees and the age or a death record
 agrees, and it is "matched" only when the person also lived in a reported city or has a death record.
-Name and age alone -> "possible_match" (a person confirms; relatives not looked up). Several
+Name and age alone -> "possible_match" (details and next of kin are still fetched, but a person must
+confirm it is the right person before any contact). Several
 candidates -> "ambiguous" (a person chooses). Every search too broad -> "too_many_results".
 Nothing found -> "not_found".
 A relationship comes from SearchBug's relationshipType or from the articles; otherwise it is
@@ -31,8 +33,10 @@ from src.core.logger import configure_logging
 from src.core.outputs import read_json, write_json_atomic, write_stage_csv, write_stage_json
 from src.modules.contact_enrichment import config
 from src.modules.contact_enrichment.client import SearchBugClient, SearchBugError
-from src.modules.contact_enrichment.match import AMBIGUOUS, MATCHED, NOT_FOUND, POSSIBLE, choose, relationship_from_articles
-from src.modules.contact_enrichment.parse import find_people
+from src.modules.contact_enrichment.match import (
+    AMBIGUOUS, MATCHED, NOT_FOUND, POSSIBLE, choose, closeness, relationship_from_articles,
+)
+from src.modules.contact_enrichment.parse import find_people, most_recent_phones
 
 logger = logging.getLogger(__name__)
 
@@ -133,15 +137,28 @@ def find_deceased(lookups, target):
     return (TOO_MANY if too_broad and not summary else NOT_FOUND), None, summary, made
 
 
+def relationship_of(relative, texts):
+    """(relationship, source, quote): SearchBug's relationshipType, else the articles' own words."""
+    if relative["relationship"]:
+        return relative["relationship"], "searchbug", None
+    relationship, quote = relationship_from_articles(relative["names"], texts)
+    return relationship, ("article" if relationship else None), quote
+
+
+def closest_relatives(relatives, texts, limit):
+    """The `limit` closest relatives (spouse, children, parents, siblings, others), closest first.
+    Ranked before any lookup, so the paid lookups go to the closest family."""
+    ranked = sorted(enumerate(relatives), key=lambda pair: (closeness(relationship_of(pair[1], texts)[0])[0], pair[0]))
+    return [relative for _, relative in ranked[:limit]]
+
+
 def relative_contact(lookups, relative, texts):
     """One relative: relationship, and current address and phones from a follow-up lookup by token."""
-    relationship, source, quote = relative["relationship"], "searchbug" if relative["relationship"] else None, None
-    if not relationship:
-        relationship, quote = relationship_from_articles(relative["names"], texts)
-        source = "article" if relationship else None
+    relationship, source, quote = relationship_of(relative, texts)
     record = {
         "name": relative["names"][0] if relative["names"] else None,
         "relationship": relationship or "relative (relationship not stated)",
+        "closeness": closeness(relationship)[1],
         "relationship_source": source,
         "relationship_quote": quote,
         "address": relative["addresses"][0]["address"] if relative["addresses"] else None,
@@ -165,6 +182,7 @@ def relative_contact(lookups, relative, texts):
         except SearchBugError as error:
             record["lookup"] = FAILED
             record["lookup_error"] = error.to_dict()
+    record["phones"] = most_recent_phones(record["phones"], config.MAX_PHONES)
     return record
 
 
@@ -203,47 +221,51 @@ def enrich(lookups, target, texts):
 
     status, chosen, candidates, made = find_deceased(lookups, target)
     detail = dict(base, match=status, searches=made, candidates=candidates)
-    if status == POSSIBLE:
-        # name and age agree but nothing else does: a person confirms before relatives are paid for
-        possible = {"dob": next((d["date"] for d in chosen["dobs"] if d["date"]), None),
-                    "last_address": chosen["addresses"][0]["address"] if chosen["addresses"] else None,
-                    "searchbug_token": chosen["token"]}
-        return dict(base, match=POSSIBLE, deceased=possible, relatives=[], candidates=1), detail
-    if status != MATCHED:
+    if status not in (MATCHED, POSSIBLE):
         return dict(base, match=status, deceased=None, relatives=[],
                     candidates=len(candidates) if status == AMBIGUOUS else 0), detail
 
-    relatives = [relative_contact(lookups, r, texts) for r in chosen["relatives"][:config.MAX_RELATIVES]]
+    relatives = [relative_contact(lookups, r, texts)
+                 for r in closest_relatives(chosen["relatives"], texts, config.MAX_RELATIVES)]
     deceased = {
         "dob": next((d["date"] for d in chosen["dobs"] if d["date"]), None),
         "date_of_death": next((d["date"] for d in chosen["dods"] if d["date"]), None),
         "last_address": chosen["addresses"][0]["address"] if chosen["addresses"] else None,
-        "phones": chosen["phones"],
+        "phones": most_recent_phones(chosen["phones"], config.MAX_PHONES),
         "searchbug_token": chosen["token"],
     }
     detail.update(chosen_record=chosen, relatives_found=len(chosen["relatives"]))
-    return dict(base, match=MATCHED, deceased=deceased, relatives=relatives), detail
+    # A possible match (name and age only) is filled in like a match, but keeps its status:
+    # a person must confirm it is the right person before anyone is contacted.
+    return dict(base, match=status, deceased=deceased, relatives_on_record=len(chosen["relatives"]),
+                relatives=relatives), detail
 
 
-CSV_COLUMNS = [
+DECEASED_COLUMNS = [
     "incident_id", "crash_date", "match_status",
     "deceased_name", "deceased_age", "deceased_dob", "deceased_date_of_death", "deceased_last_address",
-    "deceased_phones",
-    "relative_name", "relationship", "relationship_source", "relative_address", "relative_phones",
-    "relative_emails", "relative_lookup",
+    "deceased_phones", "relatives_on_record",
+]
+RELATIVE_FIELDS = ["name", "relationship", "relationship_source", "address", "phones", "emails"]
+CSV_COLUMNS = DECEASED_COLUMNS + [
+    f"next_of_kin_{i}_{field}" for i in range(1, config.MAX_RELATIVES + 1) for field in RELATIVE_FIELDS
 ]
 
 
+CELL_SEPARATOR = " | "  # between several values in one cell (phones, emails)
+
+
 def _phones(phones):
-    return "; ".join(f"{p['number']} ({p['type']})" if p.get("type") else p["number"] for p in phones or [])
+    return CELL_SEPARATOR.join(f"{p['number']} ({p['type']})" if p.get("type") else p["number"] for p in phones or [])
 
 
 def csv_rows(entries):
-    """One row per relative; a deceased person with no relatives (or no match) still gets one row."""
+    """One row per deceased person; next of kin side by side, closest first (next_of_kin_1 = closest)."""
     rows = []
     for entry in entries:
         deceased = entry.get("deceased") or {}
-        person = {
+        relatives = entry.get("relatives") or []
+        row = {
             "incident_id": entry.get("incident_id"),
             "crash_date": entry.get("crash_date"),
             "match_status": entry.get("match"),
@@ -253,21 +275,18 @@ def csv_rows(entries):
             "deceased_date_of_death": deceased.get("date_of_death"),
             "deceased_last_address": deceased.get("last_address"),
             "deceased_phones": _phones(deceased.get("phones")),
+            "relatives_on_record": entry.get("relatives_on_record", len(relatives)),
         }
-        relatives = entry.get("relatives") or []
-        if not relatives:
-            rows.append(person)
-        for relative in relatives:
-            rows.append(dict(
-                person,
-                relative_name=relative.get("name"),
-                relationship=relative.get("relationship"),
-                relationship_source=relative.get("relationship_source"),
-                relative_address=relative.get("address"),
-                relative_phones=_phones(relative.get("phones")),
-                relative_emails="; ".join(relative.get("emails") or []),
-                relative_lookup=relative.get("lookup"),
-            ))
+        for i, relative in enumerate(relatives[:config.MAX_RELATIVES], start=1):
+            row.update({
+                f"next_of_kin_{i}_name": relative.get("name"),
+                f"next_of_kin_{i}_relationship": relative.get("relationship"),
+                f"next_of_kin_{i}_relationship_source": relative.get("relationship_source"),
+                f"next_of_kin_{i}_address": relative.get("address"),
+                f"next_of_kin_{i}_phones": _phones(relative.get("phones")),
+                f"next_of_kin_{i}_emails": CELL_SEPARATOR.join(relative.get("emails") or []),
+            })
+        rows.append(row)
     return rows
 
 

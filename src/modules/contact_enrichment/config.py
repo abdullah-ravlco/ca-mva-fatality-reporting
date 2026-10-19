@@ -30,7 +30,11 @@ SEARCHBUG_MAX_RETRIES = _int("SEARCHBUG_MAX_RETRIES", 3)
 SEARCHBUG_RESULT_LIMIT = _int("SEARCHBUG_RESULT_LIMIT", 25)           # LIMIT: candidates per search (max 250)
 # Paid lookups (not answered from the cache) allowed in one run; the rest wait for the next run.
 MAX_LOOKUPS_PER_RUN = _int("SEARCHBUG_MAX_LOOKUPS_PER_RUN", 100)
-MAX_RELATIVES = _int("SEARCHBUG_MAX_RELATIVES", 5)                     # relatives looked up per deceased person
+# Next of kin per deceased person: the closest relatives (spouse, children, parents, siblings, others),
+# looked up and listed. The second is left empty when there is only one.
+MAX_RELATIVES = _int("SEARCHBUG_MAX_RELATIVES", 2)
+# Phones listed per person (deceased and each next of kin): the most recently seen ones.
+MAX_PHONES = _int("SEARCHBUG_MAX_PHONES", 2)
 REFERENCE = "ca-mva-fatality-reporting"
 
 # Which lead_verification verdicts are looked up.
