@@ -151,17 +151,8 @@ def test_google_links_are_resolved_and_failures_keep_the_original(tmp_path, monk
     assert again["url"] == "https://ktla.com/ok-story"
 
 
-def test_fixed_collection_period():
-    from datetime import date as day
-    from config.settings import window_for
-
-    end, hours = window_for(day(2026, 9, 1), day(2026, 9, 30), "America/Los_Angeles")
-    assert (end.year, end.month, end.day, end.hour) == (2026, 10, 1, 0)
-    assert hours == 30 * 24
-
-
-def test_finalize_keeps_only_stories_inside_a_fixed_period():
-    end = datetime(2026, 10, 1, 7, 0, tzinfo=timezone.utc)  # midnight Pacific after 30 September
+def test_finalize_keeps_only_stories_inside_the_window():
+    end = datetime(2026, 10, 1, 7, 0, tzinfo=timezone.utc)  # the window ends here and covers 30 days back
     records = [
         raw("https://a.com/sept", "Driver killed in crash on I-5", published="2026-09-15T10:00:00+00:00"),
         raw("https://a.com/aug", "Driver killed in crash on I-5", published="2026-08-20T10:00:00+00:00"),

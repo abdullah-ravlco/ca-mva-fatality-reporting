@@ -4,6 +4,7 @@ data/runs/<run_id>/<module>/<file>  - kept for every run (history)
 data/<module>/<file>                - latest run; the input of the next stage
 """
 
+import csv
 import json
 import os
 from datetime import datetime, timezone
@@ -46,6 +47,25 @@ def write_stage_json(module, filename, data):
     write_json_atomic(run_dir(module) / filename, data)
     path = module_data_dir(module) / filename
     write_json_atomic(path, data)
+    return path
+
+
+def write_csv_atomic(path, columns, rows):
+    """Write rows (dicts) as CSV with a header, via a temporary file. UTF-8 with BOM so Excel opens it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_suffix(path.suffix + ".tmp")
+    with temporary_path.open("w", encoding="utf-8-sig", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=columns, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    os.replace(temporary_path, path)
+
+
+def write_stage_csv(module, filename, columns, rows):
+    """CSV version of write_stage_json: run folder and stable folder. Returns the stable path."""
+    write_csv_atomic(run_dir(module) / filename, columns, rows)
+    path = module_data_dir(module) / filename
+    write_csv_atomic(path, columns, rows)
     return path
 
 

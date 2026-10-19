@@ -26,7 +26,11 @@ from bs4 import BeautifulSoup
 
 
 BATCH_URL = "https://news.google.com/_/DotsSplashUi/data/batchexecute"
-MIN_SECONDS_BETWEEN_CALLS = 0.4  # Google rate-limits bursts (HTTP 429); calls are spaced this far apart
+MIN_SECONDS_BETWEEN_CALLS = 0.4  # starting spacing between calls; Google answers HTTP 429 when it is too fast
+MAX_SECONDS_BETWEEN_CALLS = 6.0
+COOLDOWN_AFTER_429_SECONDS = 20   # every thread pauses this long after a 429
+MAX_ATTEMPTS = 5
+CALMER_AFTER_OK_CALLS = 30        # this many calls in a row without a 429 speed the pace back up
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -37,9 +41,8 @@ HEADERS = {
 }
 URL_IN_BYTES_RE = re.compile(rb"https?://[\x21-\x7e]+")
 
-_next_call = [0.0]
 _throttle_lock = threading.Lock()
-RETRY_429_SECONDS = 8
+_pace = {"next": 0.0, "interval": MIN_SECONDS_BETWEEN_CALLS, "ok_streak": 0, "slowed_at": -1e9}
 
 
 class GoogleNewsDecodeError(Exception):
@@ -57,23 +60,47 @@ def article_id(url):
 
 
 def _throttle():
-    """Space calls to Google MIN_SECONDS_BETWEEN_CALLS apart, across all threads."""
+    """Space calls to Google apart, across all threads. The spacing adapts: see _note_result."""
     with _throttle_lock:
         now = time.monotonic()
-        slot = max(now, _next_call[0])
-        _next_call[0] = slot + MIN_SECONDS_BETWEEN_CALLS
+        slot = max(now, _pace["next"])
+        _pace["next"] = slot + _pace["interval"]
     if slot > now:
         time.sleep(slot - now)
 
 
-def _get(page, timeout):
-    """GET with one pause-and-retry when Google answers 429."""
-    for attempt in range(2):
+def _note_result(status_code):
+    """Slow every thread down when Google says 429, and speed up again after a calm stretch."""
+    with _throttle_lock:
+        if status_code == 429:
+            now = time.monotonic()
+            # Calls already in flight all get a 429 together: slow down once per cooldown, not once each.
+            if now - _pace["slowed_at"] > COOLDOWN_AFTER_429_SECONDS:
+                _pace["interval"] = min(_pace["interval"] * 2, MAX_SECONDS_BETWEEN_CALLS)
+                _pace["slowed_at"] = now
+            _pace["ok_streak"] = 0
+            _pace["next"] = max(_pace["next"], now + COOLDOWN_AFTER_429_SECONDS)
+        else:
+            _pace["ok_streak"] += 1
+            if _pace["ok_streak"] >= CALMER_AFTER_OK_CALLS:
+                _pace["interval"] = max(MIN_SECONDS_BETWEEN_CALLS, _pace["interval"] * 0.8)
+                _pace["ok_streak"] = 0
+
+
+def _send(send):
+    """Call send() (a requests call) until Google stops answering 429, up to MAX_ATTEMPTS times."""
+    for attempt in range(MAX_ATTEMPTS):
         _throttle()
-        response = requests.get(page, headers=HEADERS, timeout=timeout)
-        if response.status_code != 429 or attempt:
-            return response
-        time.sleep(RETRY_429_SECONDS)
+        response = send()
+        _note_result(response.status_code)
+        if response.status_code != 429:
+            break
+    return response
+
+
+def _get(page, timeout):
+    """GET that backs off when Google answers 429."""
+    return _send(lambda: requests.get(page, headers=HEADERS, timeout=timeout))
 
 
 def _decode_old_format(gn_id):
@@ -115,21 +142,12 @@ def _batchexecute(gn_id, signature, timestamp, timeout):
     request_body = [[["Fbv4je", json.dumps(inner, separators=(",", ":"))]]]
     payload = "f.req=" + quote(json.dumps(request_body, separators=(",", ":")))
 
+    headers = dict(HEADERS, **{
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+        "Referer": "https://news.google.com/",
+    })
     try:
-        for attempt in range(2):
-            _throttle()
-            response = requests.post(
-                BATCH_URL,
-                data=payload,
-                headers=dict(HEADERS, **{
-                    "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-                    "Referer": "https://news.google.com/",
-                }),
-                timeout=timeout,
-            )
-            if response.status_code != 429 or attempt:
-                break
-            time.sleep(RETRY_429_SECONDS)
+        response = _send(lambda: requests.post(BATCH_URL, data=payload, headers=headers, timeout=timeout))
     except requests.RequestException as exc:
         raise GoogleNewsDecodeError(f"batchexecute request failed: {exc}") from exc
     if not response.ok:

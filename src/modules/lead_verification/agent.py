@@ -69,23 +69,41 @@ Rules:
   passengers, pedestrians). Unnamed people are listed too, with name empty. Never invent names.
 - incident.date is YYYY-MM-DD (the crash, not the arrest or funeral date). incident.location is
   where the crash happened.
-- other_party_involved = "yes" if a driver or vehicle other than a deceased person's own conduct
-  could be responsible: another vehicle, a driver who struck a pedestrian or cyclist, or the
-  driver of the vehicle a deceased passenger rode in. "no" for a deceased driver who crashed
-  alone. "unknown" when the sources do not say.
+- other_party_involved = "yes" if someone other than the victims and the driver of a victim's own
+  vehicle was involved: another vehicle, or a driver who struck a pedestrian or cyclist. "no" when
+  the sources establish nobody else was involved (a solo crash; a passenger killed in a crash their
+  own driver caused). "unknown" when the sources do not say.
 - at_fault, per person: "yes" if the sources report the person caused the crash or was cited,
   arrested or charged for it; "no" if the sources say another party was at fault or was cited,
   arrested or charged, or describe the person doing nothing wrong (a pedestrian in a crosswalk, a
-  passenger, a parked car struck); "unknown" while it is under investigation or not reported.
-  Give fault_basis and a quote. This is what the sources report, not a legal finding.
+  passenger, someone inside a building that a vehicle crashed into); "unknown" while it is under
+  investigation or not reported. Give fault_basis and a quote. This is what the sources report,
+  not a legal finding.
+- other_party_at_fault (incident): did the other party cause the crash? "yes" only with a quote that
+  says so or describes it (ran a red light, speeding and lost control, DUI, cited, arrested,
+  charged). "unknown" when the cause is under investigation, not reported, or the driver had a
+  medical emergency with no other cause stated. "no" only when the sources say the other party was
+  not at fault.
+- fault_basis must match its quote: "other_party_cited_or_arrested" / "deceased_cited_or_arrested"
+  only when the quote itself says someone was cited, arrested, charged or booked;
+  "stated_by_authorities" only when the quote attributes the cause to police/CHP/coroner;
+  "circumstances_described" when the quote describes what the driver did; otherwise "none".
 - impaired, per person: "yes" only when a source says alcohol, drugs or a DUI were involved for
   that person, "no" only when a source says they were not, otherwise "unknown".
+- A road crash is any death caused by a motor vehicle in motion: vehicles colliding, a vehicle
+  hitting a pedestrian, cyclist or scooter rider, or a vehicle leaving the road and striking a
+  building, a restaurant or a person inside a home. That is true even when the crash ended off the
+  road or the driver had a medical emergency. "not_a_road_crash" is ONLY for deaths no moving
+  vehicle caused (illness, homicide, suicide, a fall, a fire with no crash).
+- address (residence): only where the person lived, with a quote that says so ("of Lamont",
+  "a Lamont resident", "lived in Lamont"). The crash location is NOT a residence.
 - assessment.verdict: "does_not_qualify" when nobody died, nobody other than the deceased could
   be responsible (single-vehicle crash, no other party), the deceased driver was impaired or at
-  fault, it was not a road crash (medical event, suicide, intentional act), or it is outside
-  California; "qualifies" when someone died, another party is involved, and the deceased was not
-  impaired or at fault; "needs_review" when the facts needed to decide are missing. Put the codes
-  in assessment.reasons and explain in one or two sentences.
+  fault, it was not a road crash (see above), or it is outside California; "qualifies" when
+  someone died, another party is involved and at fault, and the deceased was not impaired or at
+  fault; "fault_unidentified" when all of that holds except that the other party's fault is not
+  established; "needs_review" when other facts needed to decide are missing. Put the codes in
+  assessment.reasons and explain in one or two sentences.
 - missing_information: what you could not find. pages_used: URLs you relied on."""
 
 
@@ -102,11 +120,41 @@ def _sources_block(sources):
     return "\n\n-----\n\n".join(blocks)
 
 
+SCREENING_FOCUS = {
+    "victim_identity_unidentified": "The victim's name has not been reported yet: search for it first.",
+    "fault_unidentified": "Who was at fault has not been established yet: search for it first.",
+    "qualified": "Screening found everything needed: confirm each fact, and look for anything that contradicts it.",
+}
+
+
+def _screening_block(screening):
+    """What severity screening found (unverified) and what to focus on."""
+    if not screening:
+        return ""
+    facts = screening.get("facts") or {}
+    victims = [
+        {key: v.get(key) for key in ("name", "age", "role", "outcome", "injury_tier", "at_fault_party", "impaired")}
+        for v in facts.get("victims") or []
+    ]
+    known = {
+        "crash_date": facts.get("crash_date"),
+        "crash_location": facts.get("crash_location"),
+        "other_party": (facts.get("other_party") or {}).get("description"),
+        "victims": victims,
+    }
+    return (
+        f"Severity screening result: {screening.get('status')}. "
+        f"{SCREENING_FOCUS.get(screening.get('status'), '')}\n"
+        f"Facts screening extracted from these articles (treat as unverified, check them): {json.dumps(known)}\n"
+    )
+
+
 def build_input(incident, sources):
     grouping = incident.get("grouping") or {}
     return (
         "Incident grouped from these articles (they should all be about the same crash; "
         "tell me if they are not).\n"
+        f"{_screening_block(incident.get('screening'))}"
         f"Candidate dates: {json.dumps(grouping.get('candidate_incident_dates'))}\n"
         f"Candidate locations: {json.dumps(grouping.get('locations'))}\n\n"
         f"{_sources_block(sources[:MAX_SOURCES_PER_PROMPT])}"
