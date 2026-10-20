@@ -1,4 +1,4 @@
-"""The case status, recomputed in Python from the facts JEV extracted.
+"""The case status, decided in Python from the facts JEV's answers were mapped to (questions.py).
 
 JEV proposes a status too, but this one is used: the same facts always give the same status, and
 every dropped case says why. A disagreement with JEV is recorded (status_mismatch).
@@ -64,6 +64,8 @@ def supported_claims(victim):
     was at fault" also needs a quote that shows what they did: "under investigation" or "the driver
     had a medical emergency" is not enough."""
     at_fault, impaired, notes = victim.at_fault_party, victim.impaired, []
+    if victim.evidence == "classified":
+        return at_fault, impaired, notes
     label = victim.name or "unnamed victim"
     quote = victim.fault_quote or ""
     if at_fault != "unknown" and not quote:

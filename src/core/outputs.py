@@ -2,16 +2,26 @@
 
 data/runs/<run_id>/<module>/<file>  - kept for every run (history)
 data/<module>/<file>                - latest run; the input of the next stage
+
+The JSON files are always written and read here. When a database is configured (.env, see db.py),
+every JSON file under data/ is also copied to Postgres' documents table (key = its path relative to
+data/); the stage tables are filled separately after each stage (db_sync.py). A database that cannot
+be reached never stops a run: the copy is switched off for the rest of the run and a warning is logged.
 """
 
 import csv
 import json
+import logging
 import os
 from datetime import datetime, timezone
 
 from config.settings import DATA_DIR, module_data_dir
+from src.core import db
 
 RUN_ID_ENV = "PIPELINE_RUN_ID"
+
+logger = logging.getLogger(__name__)
+_copy_failed = [False]  # set after the first failed copy, so a down database does not slow every write
 
 
 def new_run_id():
@@ -31,8 +41,31 @@ def run_dir(module):
     return DATA_DIR / "runs" / run_id() / module
 
 
+def db_key(path):
+    """The Postgres key of a JSON file under data/ (None for any other path or when Postgres is off)."""
+    if _copy_failed[0] or not db.enabled():
+        return None
+    try:
+        return path.relative_to(DATA_DIR).as_posix()
+    except ValueError:
+        return None
+
+
+def copy_to_database(path, data):
+    """Copy one JSON output to Postgres' documents table; a failure is logged and never raised."""
+    key = db_key(path)
+    if not key:
+        return
+    try:
+        db.put(key, data)
+    except Exception as error:
+        _copy_failed[0] = True
+        logger.warning("Database copy switched off for this run (%s: %s). The JSON files are complete; "
+                       "load them later with: python -m src.core.migrate_to_postgres", type(error).__name__, error)
+
+
 def write_json_atomic(path, data):
-    """Write to a temporary file, then replace the destination."""
+    """Write to a temporary file, then replace the destination; also copied to Postgres when configured."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = path.with_suffix(path.suffix + ".tmp")
     with temporary_path.open("w", encoding="utf-8") as file:
@@ -40,6 +73,7 @@ def write_json_atomic(path, data):
         file.flush()
         os.fsync(file.fileno())
     os.replace(temporary_path, path)
+    copy_to_database(path, data)
 
 
 def write_stage_json(module, filename, data):

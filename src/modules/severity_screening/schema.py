@@ -48,6 +48,9 @@ class Victim(BaseModel):
     impaired: Literal["yes", "no", "unknown"] = "unknown"
     impaired_quote: Optional[str] = None
     impaired_source_url: Optional[str] = None
+    # "quoted": fault/impairment come with a quote (checked in decision.supported_claims);
+    # "classified": JEV classified them from the articles and gave no quote.
+    evidence: Literal["quoted", "classified"] = "quoted"
 
     @field_validator("name", "injury_quote", "injury_source_url", "rode_with", "fault_quote",
                      "fault_source_url", "impaired_quote", "impaired_source_url", mode="before")

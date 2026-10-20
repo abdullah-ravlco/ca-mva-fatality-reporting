@@ -9,8 +9,9 @@ import src.core.outputs
 from src.modules.severity_screening import config as screening_config
 from src.modules.severity_screening import pipeline as screening
 from src.modules.severity_screening.decision import decide
-from src.modules.severity_screening.jev_client import JevClient, JevError, parse_json_reply
+from src.modules.severity_screening.jev_client import JevClient, JevError
 from src.modules.severity_screening.prompt import build_user_message
+from src.modules.severity_screening.questions import NAMED_IN_ARTICLES, QUESTIONS, to_result
 from src.modules.severity_screening.schema import JevResult
 
 TEXT = "Maria Lopez, 34, of Fresno died at the scene. Police said the pickup driver ran a red light and was arrested."
@@ -97,17 +98,27 @@ def test_reply_values_are_normalized():
     assert result.other_party.involved == "unclear"
 
 
-def test_json_is_found_inside_fences_or_text():
-    assert parse_json_reply('```json\n{"a": 1}\n```') == {"a": 1}
-    assert parse_json_reply('Here you go: {"a": {"b": 2}} done') == {"a": {"b": 2}}
-    with pytest.raises(ValueError):
-        parse_json_reply("no json here")
-
-
 # ------------------------------------------------------------------ JEV client errors
 
+ANSWERS = {
+    "injury": {"type": "choice", "choice": "death", "confidence": 0.9, "probabilities": {}},
+    "other_party": {"type": "choice", "choice": "yes", "confidence": 0.9, "probabilities": {}},
+    "fault": {"type": "choice", "choice": "other_party", "confidence": 0.8, "probabilities": {}},
+    "impaired": {"type": "noul", "noul": 0.02},
+    "conflict": {"type": "noul", "noul": 0.05},
+    "victim_named": {"type": "noul", "noul": 0.97},
+}
+
+
+def answers(**changes):
+    out = {k: dict(v) for k, v in ANSWERS.items()}
+    for name, value in changes.items():
+        out[name].update(value)
+    return out
+
+
 def reply(status=200, body=None, text=None, headers=None):
-    payload = body if body is not None else {"choices": [{"message": {"content": json.dumps({"case_status": "dropped"})}}]}
+    payload = body if body is not None else {"model": "jev-1.13.0", "answers": ANSWERS, "usage": {}}
     return SimpleNamespace(status_code=status, headers=headers or {}, text=text if text is not None else json.dumps(payload),
                            json=lambda: payload)
 
@@ -117,37 +128,40 @@ class FakeSession:
         self.responses, self.calls = list(responses), []
 
     def post(self, url, headers=None, json=None, timeout=None):
-        self.calls.append({"url": url, "json": json})
+        self.calls.append({"url": url, "json": json, "headers": headers})
         item = self.responses.pop(0)
         if isinstance(item, Exception):
             raise item
         return item
 
 
-def client(*responses, retries=2):
-    return JevClient("https://jev.example/v1/", "key", "jev-1", max_retries=retries,
+def client(*responses, retries=2, url="https://jev.example/v1/"):
+    return JevClient(url, "key", "jev-1", max_retries=retries,
                      session=FakeSession(*responses), sleep=lambda s: None)
 
 
 def test_endpoint_and_request_format():
     c = client(reply())
-    result, meta = c.screen("system", "user")
+    got, meta = c.ask("the articles", QUESTIONS)
     call = c.session.calls[0]
-    assert call["url"] == "https://jev.example/v1/chat/completions"
-    assert call["json"]["model"] == "jev-1" and call["json"]["response_format"] == {"type": "json_object"}
-    assert result.case_status == "dropped" and meta["attempts"] == 1
+    assert call["url"] == "https://jev.example/v1/systemone"
+    assert call["json"] == {"model": "jev-1", "state": "the articles", "questions": QUESTIONS}
+    assert call["headers"]["Authorization"] == "Bearer key"
+    assert got["injury"]["choice"] == "death" and meta["attempts"] == 1
+    # a URL that already ends in /systemone is used as is
+    assert client(url="https://jev.example/v1/systemone").endpoint == "https://jev.example/v1/systemone"
 
 
 def test_rate_limit_and_server_errors_are_retried():
     c = client(reply(429, text="slow down", headers={"Retry-After": "3"}), reply(503, text="busy"), reply())
-    _, meta = c.screen("s", "u")
+    _, meta = c.ask("s", QUESTIONS)
     assert meta["attempts"] == 3
 
 
 def test_auth_error_is_not_retried_and_has_a_hint():
     c = client(reply(401, text='{"error": "bad key"}', headers={"x-request-id": "req-9"}))
     with pytest.raises(JevError) as caught:
-        c.screen("s", "u")
+        c.ask("s", QUESTIONS)
     error = caught.value
     assert (error.kind, error.status, error.attempts, error.request_id) == ("http", 401, 1, "req-9")
     assert "JEV_API_KEY" in error.hint and "bad key" in error.response_excerpt
@@ -156,45 +170,78 @@ def test_auth_error_is_not_retried_and_has_a_hint():
 def test_timeouts_give_up_after_the_retry_limit():
     c = client(requests.Timeout("t1"), requests.Timeout("t2"), requests.Timeout("t3"))
     with pytest.raises(JevError) as caught:
-        c.screen("s", "u")
+        c.ask("s", QUESTIONS)
     assert caught.value.kind == "timeout" and caught.value.attempts == 3
 
 
 def test_context_too_long_is_explained():
     c = client(reply(400, text="This model's maximum context length is 8192 tokens"))
     with pytest.raises(JevError) as caught:
-        c.screen("s", "u")
+        c.ask("s", QUESTIONS)
     assert caught.value.kind == "context" and "JEV_MAX_INPUT_CHARS" in caught.value.hint
 
 
-def test_json_mode_is_dropped_when_jev_does_not_support_it():
-    c = client(reply(400, text="unknown parameter: response_format"), reply())
-    c.screen("s", "u")
-    assert "response_format" not in c.session.calls[1]["json"] and c.json_mode is False
-
-
-@pytest.mark.parametrize("content,kind", [("not json at all", "invalid_json"), ('{"victims": [{"outcome": "exploded"}]}', "schema")])
-def test_bad_replies_are_reported(content, kind):
-    c = client(reply(body={"choices": [{"message": {"content": content}}]}))
+@pytest.mark.parametrize("body", [{"output": "something else"}, {"answers": {"injury": ANSWERS["injury"]}}])
+def test_wrong_response_shape_is_reported(body):
+    c = client(reply(body=body))
     with pytest.raises(JevError) as caught:
-        c.screen("s", "u")
-    assert caught.value.kind == kind and caught.value.response_excerpt
-
-
-def test_wrong_response_shape_is_reported():
-    c = client(reply(body={"output": "something else"}))
-    with pytest.raises(JevError) as caught:
-        c.screen("s", "u")
+        c.ask("s", QUESTIONS)
     assert caught.value.kind == "bad_response"
 
 
-def test_missing_configuration_names_the_settings(monkeypatch):
-    monkeypatch.setattr(screening_config, "JEV_API_URL", "")
+def test_only_the_key_is_required(monkeypatch):
     monkeypatch.setattr(screening_config, "JEV_API_KEY", "")
-    monkeypatch.setattr(screening_config, "JEV_MODEL", "jev")
     with pytest.raises(JevError) as caught:
         JevClient.from_env()
-    assert "JEV_API_URL, JEV_API_KEY" in str(caught.value)
+    assert "JEV_API_KEY" in str(caught.value)
+    monkeypatch.setattr(screening_config, "JEV_API_KEY", "k")
+    assert JevClient.from_env().endpoint == "https://api.typesafe.ai/v1/systemone"
+
+
+# ------------------------------------------------------------------ JEV answers -> facts
+
+INCIDENT = {"incident_id": "inc-x", "victim_ages_mentioned": [34],
+            "candidate_incident_dates": [{"date": "2026-09-12"}],
+            "locations": [{"road": "Highway 99", "place": "Fresno", "county": None}]}
+
+
+def test_answers_become_the_facts_the_decision_rules_judge():
+    result = to_result(ANSWERS, INCIDENT)
+    victim_ = result.victims[0]
+    assert (victim_.name, victim_.age, victim_.outcome) == (NAMED_IN_ARTICLES, 34, "killed")
+    assert (result.crash_date, result.crash_location) == ("2026-09-12", "Highway 99, Fresno")
+    decision = decide(result)
+    assert decision["status"] == "qualified" and decision["corrections"] == [] and not decision["status_mismatch"]
+
+
+@pytest.mark.parametrize("changes,status,codes", [
+    ({"victim_named": {"noul": 0.1}}, "victim_identity_unidentified", None),
+    ({"fault": {"choice": "not_established"}}, "fault_unidentified", None),
+    ({"fault": {"confidence": 0.3}}, "fault_unidentified", None),                       # unsure = not reported
+    ({"fault": {"choice": "victim"}}, "dropped", ["victim_at_fault"]),
+    ({"fault": {"choice": "own_driver"}}, "dropped", ["own_driver_at_fault"]),
+    ({"other_party": {"choice": "no"}}, "dropped", ["no_other_party"]),
+    ({"other_party": {"confidence": 0.2}}, "dropped", ["other_party_unclear"]),
+    ({"injury": {"choice": "serious"}}, "dropped", ["injury_not_catastrophic"]),
+    ({"injury": {"choice": "catastrophic"}}, "qualified", None),
+    ({"injury": {"choice": "not_reported"}}, "dropped", ["injury_not_reported"]),
+    ({"injury": {"choice": "no_injury"}}, "dropped", ["no_victim_reported"]),
+    ({"impaired": {"noul": 0.95}}, "dropped", ["victim_impaired_driver"]),
+    ({"impaired": {"noul": 0.5}}, "qualified", None),                                    # in between = unknown
+    ({"conflict": {"noul": 0.9}}, "dropped", ["conflicting_reports"]),
+])
+def test_each_answer_moves_the_status(changes, status, codes):
+    decision = decide(to_result(answers(**changes), INCIDENT))
+    assert decision["status"] == status
+    assert (decision["drop_reason"] or {}).get("codes") == codes
+
+
+def test_date_location_and_age_come_from_the_grouping():
+    decision = decide(to_result(ANSWERS, {"incident_id": "inc-y"}))
+    assert decision["drop_reason"]["codes"] == ["age_missing", "crash_details_missing"]
+    no_age = dict(INCIDENT, victim_ages_mentioned=[])
+    assert decide(to_result(ANSWERS, dict(no_age, **{"candidate_incident_dates": [{"date": "2026-09-12"}]})))["drop_reason"]["codes"] == [
+        "age_missing"]
 
 
 # ------------------------------------------------------------------ prompt input
@@ -215,7 +262,7 @@ def sandbox(tmp_path, monkeypatch):
     monkeypatch.setenv("PIPELINE_RUN_ID", "test-run")
     incidents = tmp_path / "incidents.json"
     incidents.write_text(json.dumps({"incidents": [
-        {"incident_id": f"inc-{i}", "articles": [{"url": f"https://a.com/{i}", "title": "Pedestrian killed", "text": TEXT}]}
+        {**INCIDENT, "incident_id": f"inc-{i}", "articles": [{"url": f"https://a.com/{i}", "title": "Pedestrian killed", "text": TEXT}]}
         for i in range(3)
     ]}))
     monkeypatch.setattr(screening_config, "INCIDENTS_FILE", incidents)
@@ -229,12 +276,11 @@ class FakeJev:
     def __init__(self, fail_on=()):
         self.fail_on, self.calls = set(fail_on), []
 
-    def screen(self, system, user):
-        self.calls.append(user)
-        if any(f"Incident {i}:" in user for i in self.fail_on):
+    def ask(self, state, questions):
+        self.calls.append(state)
+        if any(f"Incident {i}:" in state for i in self.fail_on):
             raise JevError("http", "JEV request failed", 500, "boom", "req-1", 3, 4.2)
-        result = facts([victim(injury_quote="Maria Lopez, 34, of Fresno died at the scene.", injury_source_url="https://a.com/0")])
-        return result, {"attempts": 1, "elapsed_seconds": 0.5, "request_id": "r"}
+        return ANSWERS, {"attempts": 1, "elapsed_seconds": 0.5, "request_id": "r"}
 
 
 def test_stage_screens_saves_errors_and_retries_only_failures(sandbox):
@@ -245,7 +291,7 @@ def test_stage_screens_saves_errors_and_retries_only_failures(sandbox):
     statuses = {r["incident_id"]: r["status"] for r in out["incidents"]}
     assert statuses == {"inc-0": "qualified", "inc-1": "screening_failed", "inc-2": "qualified"}
     first = next(r for r in out["incidents"] if r["incident_id"] == "inc-0")
-    assert first["facts"]["victims"][0]["injury_quote_verified"] is True
+    assert first["jev"]["answers"]["injury"]["choice"] == "death" and first["jev"]["model"] == "fake-jev"
 
     errors = json.loads((sandbox / "severity_screening" / "screening_errors.json").read_text())
     assert errors[0]["incident_id"] == "inc-1" and errors[0]["http_status"] == 500 and errors[0]["request_id"] == "req-1"
@@ -258,11 +304,11 @@ def test_stage_screens_saves_errors_and_retries_only_failures(sandbox):
 
 def test_passed_leads_file_holds_only_passed_incidents_with_full_content(sandbox):
     class Mixed(FakeJev):
-        def screen(self, system, user):
-            result, meta = super().screen(system, user)
-            if "Incident inc-2:" in user:
-                result.other_party.involved = "no"  # inc-2 is dropped
-            return result, meta
+        def ask(self, state, questions):
+            got, meta = super().ask(state, questions)
+            if "Incident inc-2:" in state:
+                got = answers(other_party={"choice": "no"})  # inc-2 is dropped
+            return got, meta
 
     screening.main(Mixed())
     leads = json.loads((sandbox / "severity_screening" / "passed_leads.json").read_text())

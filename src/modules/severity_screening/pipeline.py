@@ -3,7 +3,7 @@ caused by another party move on to lead_verification.
 
 Input:  data/incident_grouping/incidents.json (full text of every article of each incident)
 Output: data/severity_screening/screened_incidents.json - every incident with its status, tags,
-          reasons, the facts JEV extracted (quotes checked against the articles) and JEV's own status
+          reasons, the facts mapped from JEV's answers (JEV's raw answers are under jev.answers)
         data/severity_screening/passed_leads.json       - only the incidents that passed, each with its
           screening result and the full content of its articles: the input of lead_verification
         data/severity_screening/screening_errors.json   - every failed JEV call, with the details
@@ -11,7 +11,7 @@ Output: data/severity_screening/screened_incidents.json - every incident with it
 Statuses: qualified, victim_identity_unidentified, fault_unidentified (passed on to
 lead_verification), dropped (with drop_reason: codes and text; not passed on), screening_failed
 (JEV call failed; retried next run).
-The status is decided in decision.py from the extracted facts; JEV's own status is kept for comparison.
+JEV answers classification questions (questions.py); the status is decided in decision.py from them.
 
 Results are saved after every incident. An incident whose articles and prompt version have not
 changed since it was screened is not sent to JEV again.
@@ -28,7 +28,8 @@ from src.modules.lead_verification.quotes import quote_in_text
 from src.modules.severity_screening import config
 from src.modules.severity_screening.decision import decide
 from src.modules.severity_screening.jev_client import JevClient, JevError
-from src.modules.severity_screening.prompt import SYSTEM_PROMPT, build_user_message
+from src.modules.severity_screening.prompt import build_user_message
+from src.modules.severity_screening.questions import QUESTIONS, to_result
 from src.modules.severity_screening.schema import JevResult
 
 logger = logging.getLogger(__name__)
@@ -233,7 +234,9 @@ def main(client=None):
         incident_id = incident["incident_id"]
         logger.info("[%s/%s] Screening %s (%s articles)", index, len(pending), incident_id, len(incident.get("articles") or []))
         try:
-            result, meta = client.screen(SYSTEM_PROMPT, build_user_message(incident))
+            answers, meta = client.ask(build_user_message(incident), QUESTIONS)
+            result = to_result(answers, incident)
+            meta = dict(meta, answers=answers)
             record = screened_record(incident, result, meta, client.model)
             logger.info("  status=%s%s tags=%s%s", record["status"],
                         f" ({record['drop_reason']['text']})" if record["drop_reason"] else "", record["tags"],

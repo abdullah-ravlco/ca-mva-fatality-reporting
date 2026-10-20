@@ -12,6 +12,16 @@ from src.modules.lead_verification.qualification import assess
 from src.modules.lead_verification.schema import AgentAssessment, Fact, IncidentFacts, LeadResult, Person
 
 TODAY = date(2026, 10, 14)
+
+
+@pytest.fixture(autouse=True)
+def fixed_today(monkeypatch):
+    """incident_output measures the window from today; pin it so the fixed crash dates stay in window."""
+    from datetime import datetime, timezone
+
+    from src.modules.lead_verification import pipeline
+
+    monkeypatch.setattr(pipeline, "reference_time", lambda: datetime(2026, 10, 14, 18, 0, tzinfo=timezone.utc))
 TEXT = "The driver who struck him was arrested on suspicion of DUI, the CHP said Sunday. Maria Lopez, 34, of Fresno died."
 
 

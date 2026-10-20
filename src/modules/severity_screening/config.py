@@ -14,7 +14,7 @@ PASSED_LEADS_NAME = "passed_leads.json"
 PASSED_LEADS_FILE = module_data_dir(MODULE) / PASSED_LEADS_NAME
 
 # Bump when the prompt or the decision rules change, so every incident is screened again.
-PROMPT_VERSION = "2026-10-19.2"
+PROMPT_VERSION = "2026-10-20.1"
 
 
 def _int(name, default):
@@ -22,14 +22,17 @@ def _int(name, default):
     return int(value) if value else default
 
 
-# JEV connection (.env). The API is called in the OpenAI chat-completions format:
-# POST {JEV_API_URL}/chat/completions with {"model", "messages"}.
-JEV_API_URL = (os.getenv("JEV_API_URL") or "").strip()
+# JEV connection (.env). TypeSafe's System One API: POST {JEV_API_URL}/systemone with a "state" (the
+# articles) and typed "questions"; only the key is required.
+JEV_API_URL = (os.getenv("JEV_API_URL") or "https://api.typesafe.ai/v1").strip()
 JEV_API_KEY = (os.getenv("JEV_API_KEY") or "").strip()
-JEV_MODEL = (os.getenv("JEV_MODEL") or "").strip()
+JEV_MODEL = (os.getenv("JEV_MODEL") or "jev-latest").strip()
 JEV_TIMEOUT_SECONDS = _int("JEV_TIMEOUT_SECONDS", 120)
 JEV_MAX_RETRIES = _int("JEV_MAX_RETRIES", 4)          # retries after the first attempt (429, 5xx, timeouts)
-JEV_JSON_MODE = (os.getenv("JEV_JSON_MODE") or "1").strip() != "0"   # ask for response_format=json_object
+JEV_LONG_CONTEXT = (os.getenv("JEV_LONG_CONTEXT") or "1").strip() != "0"   # TypeSafe-Danger-Zone-Long-Context header
+# An answer below this confidence is treated as "not reported" (choice questions); a yes/no answer
+# must be at least this sure either way.
+JEV_MIN_CONFIDENCE = float((os.getenv("JEV_MIN_CONFIDENCE") or "0.6").strip())
 JEV_MAX_INPUT_CHARS = _int("JEV_MAX_INPUT_CHARS", 0)   # 0 = send the full text of every article
 
 # Statuses that move on to lead_verification.
