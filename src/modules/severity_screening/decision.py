@@ -10,7 +10,7 @@ even when a driver in the same crash was drunk. An incident is dropped only when
   victim_identity_unidentified  - all else qualifies, the victim's name is not reported
   fault_unidentified            - all else qualifies (name, age, date, location), fault unknown
   dropped                       - with one or more reason codes (DROP_REASONS):
-      disqualified by the evidence: injury_not_catastrophic, no_other_party, victim_at_fault,
+      disqualified by the evidence: not_california, not_a_car_crash, injury_not_catastrophic, no_other_party, victim_at_fault,
         own_driver_at_fault, victim_impaired_driver
       not enough to qualify: injury_not_reported, other_party_unclear, conflicting_reports,
         crash_details_missing, age_missing, name_and_fault_unknown, no_victim_reported
@@ -30,6 +30,8 @@ SELF_PROPELLED_ROLES = ("driver", "motorcyclist", "cyclist")
 # Why a victim was dropped: code -> plain-language reason.
 DROP_REASONS = {
     # The evidence rules the case out.
+    "not_california": "the crash happened outside California",
+    "not_a_car_crash": "the incident is not a road vehicle crash (aircraft, boat, animal, assault, etc.)",
     "injury_not_catastrophic": "the reported injury is not catastrophic",
     "no_other_party": "no other party was involved",
     "victim_at_fault": "the victim caused the crash",
@@ -86,6 +88,10 @@ def judge_victim(victim, result):
     at_fault, impaired, _ = supported_claims(victim)
 
     # The evidence rules the case out.
+    if result.in_california == "no":
+        return drop("not_california")
+    if result.road_crash == "no":
+        return drop("not_a_car_crash")
     if not is_catastrophic(victim) and victim.injury_tier in ("serious", "moderate", "minor"):
         return drop("injury_not_catastrophic", detail=f"the reported injury is {victim.injury_tier}, not catastrophic")
     if other == "no":
@@ -105,12 +111,8 @@ def judge_victim(victim, result):
         missing.append("injury_not_reported")
     if other == "unclear":
         missing.append("other_party_unclear")
-    if result.conflicts:
-        missing.append("conflicting_reports")
     if not result.crash_date or not result.crash_location:
         missing.append("crash_details_missing")
-    if victim.name and victim.age is None:
-        missing.append("age_missing")
     if name_missing and fault_missing:
         missing.append("name_and_fault_unknown")
     if missing:
@@ -119,11 +121,21 @@ def judge_victim(victim, result):
             reasons[codes.index("conflicting_reports")] += ": " + "; ".join(result.conflicts)
         return status, codes, reasons
 
+    # Conflicts and a missing age do not drop a case; they are carried as notes for lead_verification.
+    flags = []
+    if result.conflicts:
+        flags.append("articles conflict: " + "; ".join(result.conflicts))
+    if victim.name and victim.age is None:
+        flags.append("age not established")
+    suffix = [f"({'; '.join(flags)})"] if flags else []
+
     if name_missing:
-        return IDENTITY, [IDENTITY], ["qualifies except that the victim's name is not reported"]
+        return IDENTITY, [IDENTITY], ["qualifies except that the victim's name is not reported"] + suffix
     if fault_missing:
-        return FAULT, [FAULT], ["qualifies except that fault is not established"]
-    return QUALIFIED, [], ["catastrophic injury, another party involved and at fault, victim identified"]
+        if result.fault_unsure:
+            return FAULT, [FAULT, "fault_unsure"], [f"qualifies except that fault is unsure: {result.fault_unsure}"] + suffix
+        return FAULT, [FAULT], ["qualifies except that fault is not established"] + suffix
+    return QUALIFIED, [], ["catastrophic injury, another party involved and at fault, victim identified"] + suffix
 
 
 def decide(result):

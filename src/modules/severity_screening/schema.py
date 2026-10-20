@@ -110,6 +110,9 @@ class JevResult(BaseModel):
     victims: List[Victim] = Field(default_factory=list)
     other_party: OtherParty = Field(default_factory=OtherParty)
     conflicts: List[str] = Field(default_factory=list)
+    in_california: Literal["yes", "no", "unknown"] = "unknown"
+    road_crash: Literal["yes", "no", "unknown"] = "unknown"  # a land vehicle crash, not a plane, boat, animal or assault
+    fault_unsure: Optional[str] = None  # set when "victim at fault" was too uncertain to drop the case
     case_status: Literal[STATUSES] = "dropped"
     drop_reasons: List[str] = Field(default_factory=list)
     tags: List[str] = Field(default_factory=list)

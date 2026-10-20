@@ -37,3 +37,7 @@ JEV_MAX_INPUT_CHARS = _int("JEV_MAX_INPUT_CHARS", 0)   # 0 = send the full text 
 
 # Statuses that move on to lead_verification.
 PASS_ON_STATUSES = ("qualified", "victim_identity_unidentified", "fault_unidentified")
+# Fault and other-party answers qualify at a lower confidence; a "no other party" must be this sure to drop a case.
+JEV_MIN_CONFIDENCE_FAULT = float((os.getenv("JEV_MIN_CONFIDENCE_FAULT") or "0.5").strip())
+JEV_MIN_CONFIDENCE_NO_OTHER_PARTY = float((os.getenv("JEV_MIN_CONFIDENCE_NO_OTHER_PARTY") or "0.8").strip())
+JEV_MIN_CONFIDENCE_VICTIM_AT_FAULT = float((os.getenv("JEV_MIN_CONFIDENCE_VICTIM_AT_FAULT") or "0.75").strip())

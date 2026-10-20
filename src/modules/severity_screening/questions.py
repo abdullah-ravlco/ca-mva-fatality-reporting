@@ -17,6 +17,29 @@ from src.modules.severity_screening.schema import JevResult
 NAMED_IN_ARTICLES = "(named in articles)"
 
 QUESTIONS = {
+    "california": {
+        "type": "choice",
+        "instructions": "Did the crash happen in California, USA?",
+        "criteria": {
+            "yes": "The crash location is in California.",
+            "no": "The crash location is outside California (another US state or another country).",
+            "unclear": "The location is not reported or cannot be placed.",
+        },
+    },
+    "crash_kind": {
+        "type": "choice",
+        "instructions": "What kind of incident is this?",
+        "criteria": {
+            "road_vehicle": (
+                "A crash on land involving cars, trucks, buses, motorcycles or bicycles, including a pedestrian "
+                "struck by one of them."
+            ),
+            "other": (
+                "Not a road vehicle crash: an airplane, helicopter, boat, train or other craft; an animal hit "
+                "with no human killed or injured; or a stabbing, shooting or other violence."
+            ),
+        },
+    },
     "injury": {
         "type": "choice",
         "instructions": "What is the worst outcome reported for a person killed or injured in this crash?",
@@ -40,12 +63,20 @@ QUESTIONS = {
     "other_party": {
         "type": "choice",
         "instructions": (
-            "Was anyone other than the victims and the driver of a victim's own vehicle involved in the crash "
-            "(another vehicle, or a driver who struck a pedestrian or cyclist)?"
+            "Did a vehicle or driver other than the victim's own vehicle cause or take part in the crash? This "
+            "includes a driver who struck a pedestrian, a cyclist or a building with people in it, and a driver "
+            "who left the scene. It does not include the victim's own vehicle hitting a parked car or fixed object."
         ),
         "criteria": {
-            "yes": "Another vehicle or driver is confirmed to be involved.",
-            "no": "The articles establish nobody else was involved (a solo crash, a rollover with no other vehicle).",
+            "yes": (
+                "Another moving vehicle or driver is involved, including one that hit a pedestrian, cyclist or "
+                "building with the victim in it."
+            ),
+            "no": (
+                "The articles establish a solo crash: the victim's own vehicle ran off the road or hit a "
+                "parked vehicle, tree, pole or other fixed object, with no other moving vehicle or driver. "
+                "(A driver who strikes a pedestrian or the people inside a building IS another party.)"
+            ),
             "unclear": "Not reported or ambiguous. An unmentioned other party is 'unclear', not 'no'.",
         },
     },
@@ -54,11 +85,18 @@ QUESTIONS = {
         "instructions": "According to the articles, who caused the crash?",
         "criteria": {
             "other_party": (
-                "Another driver or vehicle caused it, and the articles say what they did (ran a red light, "
-                "speeding, DUI, wrong-way, arrested or cited)."
+                "A driver OUTSIDE the victim's vehicle caused it (never use this when the victim's own car crossed "
+                "into the other lane), and the articles say or describe what they did (ran a red "
+                "light, speeding, DUI, wrong-way, crossed the median or into the oncoming lane, illegal turn, "
+                "rear-ended, fled, arrested or cited). Infer fault from the described maneuver even when the "
+                "article never uses the word 'fault'."
             ),
             "victim": "The person killed or injured caused the crash themself.",
-            "own_driver": "The driver of the vehicle a passenger victim rode in caused the crash.",
+            "own_driver": (
+                "The victims were occupants of the vehicle that caused the crash (for example their car crossed "
+                "the center line or median into oncoming traffic, ran the red light, or was driven wrong-way), "
+                "so their own driver was at fault."
+            ),
             "not_established": (
                 "Not reported, 'under investigation', a medical emergency, or the only evidence is that the "
                 "victim was struck."
@@ -130,22 +168,30 @@ def crash_location(incident):
 def to_result(answers, incident):
     """The JevResult (the facts decision.py judges) for an incident, from JEV's answers."""
     injury = pick(answers.get("injury"))
-    party = pick(answers.get("other_party"))
-    fault = pick(answers.get("fault"))
+    in_california = {"yes": "yes", "no": "no"}.get(pick(answers.get("california")), "unknown")
+    road_crash = {"road_vehicle": "yes", "other": "no"}.get(pick(answers.get("crash_kind")), "unknown")
+    party = pick(answers.get("other_party"), config.JEV_MIN_CONFIDENCE_FAULT)
+    if party == "no" and (answers["other_party"].get("confidence") or 0) < config.JEV_MIN_CONFIDENCE_NO_OTHER_PARTY:
+        party = None  # a shaky "no" must not drop a case
+    fault = pick(answers.get("fault"), config.JEV_MIN_CONFIDENCE_FAULT)
+    fault_unsure = None
+    if fault == "victim" and (answers["fault"].get("confidence") or 0) < config.JEV_MIN_CONFIDENCE_VICTIM_AT_FAULT:
+        fault_unsure = f"victim at fault was only {answers['fault'].get('confidence'):.0%} certain; check by hand"
+        fault = None
     impaired = yes_no(answers.get("impaired"))
     named = yes_no(answers.get("victim_named")) == "yes"
-    ages = incident.get("victim_ages_mentioned") or []
+    ages = incident.get("victim_ages_mentioned") or []  # every age in the articles, not only the victim's
     notes = [f"{name}: {answers[name].get('choice') or answers[name].get('noul')} "
              f"(confidence {answers[name].get('confidence', 'n/a')})" for name in answers]
     if len(ages) > 1:
-        notes.append(f"several ages mentioned {ages}; the first was used")
+        notes.append(f"several ages mentioned {ages}; none used (cannot tell which is the victim's)")
 
     victims = []
     if injury != "no_injury":
         outcome, tier = INJURY.get(injury, ("unknown", "unknown"))
         victims.append({
             "name": NAMED_IN_ARTICLES if named else None,
-            "age": ages[0] if ages else None,
+            "age": ages[0] if len(ages) == 1 else None,
             "role": "driver" if impaired == "yes" else "unknown",
             "outcome": outcome, "injury_tier": tier,
             "at_fault_party": FAULT.get(fault, "unknown"),
@@ -159,6 +205,9 @@ def to_result(answers, incident):
         "crash_location": crash_location(incident),
         "victims": victims,
         "other_party": {"involved": party if party in ("yes", "no") else "unclear"},
+        "in_california": in_california,
+        "road_crash": road_crash,
+        "fault_unsure": fault_unsure,
         "conflicts": ["the articles contradict each other (JEV)"] if yes_no(answers.get("conflict")) == "yes" else [],
         "notes": "; ".join(notes),
     })
