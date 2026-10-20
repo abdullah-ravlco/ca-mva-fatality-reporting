@@ -9,3 +9,5 @@ pydantic
 python-dotenv
 pytest
 pandas
+dagster
+dagster-webserver

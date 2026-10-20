@@ -30,6 +30,24 @@ python -m src.main --stage link_extraction      # one stage (repeatable)
 The run stops at the first stage that fails, so later stages never run on stale input.
 Logs go to the console and `logs/pipeline_<run_id>.log`.
 
+### With Dagster
+
+`src/orchestration/definitions.py` wraps each stage as a Dagster asset (the stage code is
+unchanged). Start the UI from the repository root and open http://localhost:3000:
+
+```bash
+mkdir -p .dagster_home && touch .dagster_home/dagster.yaml
+DAGSTER_HOME=$PWD/.dagster_home .venv/bin/dagster dev -m src.orchestration.definitions
+```
+
+| Job | Stages | Runs |
+|---|---|---|
+| `collection_job` | 1-3 (free) | by hand, or daily at 6:00 Pacific once `collection_job_schedule` is switched on |
+| `ai_and_paid_job` | 4-6 (JEV, OpenAI, SearchBug) | by hand only |
+
+Each Dagster run writes to `data/runs/<time>-<dagster run id>/`. Asset checks flag an empty
+collection and incidents with more than 15 articles (likely two crashes grouped together).
+
 ## Stages
 
 | # | Stage | Reads | Writes (`data/<stage>/`) |
