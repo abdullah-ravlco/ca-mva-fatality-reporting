@@ -18,6 +18,8 @@ cp .env.example .env   # then set OPENAI_API_KEY
 | `OPENAI_API_KEY` | for `lead_verification` | — |
 | `OPENAI_MODEL` | no | `gpt-4.1-mini` |
 | `TAVILY_API_KEY` | no; Tavily search in `source_collection` is skipped without it | — |
+| `DATABASE_URL` (or `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `PGSSLMODE`) | no; without it only the JSON files are used | — |
+| `DB_SCHEMA` / `DB_CONNECT_TIMEOUT` | no | `public` / `10` |
 
 ## Running
 
@@ -47,6 +49,28 @@ DAGSTER_HOME=$PWD/.dagster_home .venv/bin/dagster dev -m src.orchestration.defin
 
 Each Dagster run writes to `data/runs/<time>-<dagster run id>/`. Asset checks flag an empty
 collection and incidents with more than 15 articles (likely two crashes grouped together).
+## Postgres (optional)
+
+The JSON files under `data/` are always written and stay the pipeline's working files. When a database
+is configured in `.env`, the results are also stored in Postgres:
+
+- after each stage, its JSON output is loaded into tables (`src/core/db_sync.py`): `collected_items`,
+  `publishers`, `articles`, `incidents` (grouping, screening and verification results), `people`,
+  `next_of_kin`, `contact_points`, `evidence` (the quote behind each fact), `pipeline_runs`, and
+  `mailings` (for the team to fill);
+- every JSON output is also copied to a `documents` table (key = its path under `data/`).
+
+Any Postgres server or tool works: one `DATABASE_URL` (local, Docker, Postgres.app, Supabase, Neon, RDS,
+Render...) or the standard `PG*` variables that psql and pgAdmin use; `DB_SCHEMA` puts the tables in
+their own schema. The tables are created on first connection (`src/core/db_migrations/`, applied once
+each). A database that is down never stops a run: the problem is logged and the JSON files are complete.
+
+```bash
+python -m src.core.migrate_to_postgres --check   # test the connection, create the tables
+python -m src.core.migrate_to_postgres           # load the existing JSON files (safe to repeat)
+```
+
+Tests against a real Postgres run when `TEST_DATABASE_URL` is set (see `tests/test_postgres_tables.py`).
 
 ## Stages
 
@@ -55,9 +79,9 @@ collection and incidents with more than 15 articles (likely two crashes grouped 
 | 1 | `source_collection` | publisher RSS feeds, Google News RSS searches (statewide + ~50 California areas) and Tavily news search | `all_raw.json` (every item, unfiltered), `finalized_raw.json` (same-link duplicates, off-topic and old stories removed), `run_history.json` |
 | 2 | `link_extraction` | `finalized_raw.json` (every item is opened) | `articles.json` (one record per article: fetch status, text, page metadata, full-text filter decision), `extraction_errors.json` |
 | 3 | `incident_grouping` | `articles.json` (kept articles) | `incidents.json` (articles grouped per crash, candidate dates/locations, conflicts, uncertainties, grouping rationale) |
-| 4 | `severity_screening` | `incidents.json` | `screened_incidents.json` (per incident: status, tags, reasons, facts JEV extracted with `*_quote_verified`, JEV's own status), `passed_leads.json` (only the passed leads, with screening result and full article content), `screening_errors.json` (every failed JEV call) |
+| 4 | `severity_screening` | `incidents.json` | `screened_incidents.json` (per incident: status, tags, reasons, facts mapped from JEV's answers, JEV's raw answers under `jev.answers`), `passed_leads.json` (only the passed leads, with screening result and full article content), `screening_errors.json` (every failed JEV call) |
 | 5 | `lead_verification` | `passed_leads.json` (only the leads that passed screening, with their full article content) | `verified_leads.json` (per incident: qualification verdict and reasons, incident facts, every person with name/age/residence/fault/impairment, quotes with `quote_verified`, agent log), `fetch_cache.json` |
-| 6 | `contact_enrichment` | `verified_leads.json` (verdict `qualifies`) | `contacts.json` and `contacts.csv` (one row per deceased person with up to 2 next of kin, closest first: spouse, children, parents, siblings, others) (per deceased person: match status, date of birth, last address, phones, relatives with relationship, address, phones), `contacts_details.json` (candidates, match reasons, lookups), `searchbug_errors.json` |
+| 6 | `contact_enrichment` | `verified_leads.json` (verdict `qualifies`) | `contacts.json` and `contacts.csv` (the team's mailer layout, one row per deceased person: name, death date, aliases, address, phones, age, locations, accident notes; then match status and up to 2 next of kin, closest first: spouse, children, parents, siblings, others) (per deceased person: match status, date of birth, last address, phones, relatives with relationship, address, phones), `contacts_details.json` (candidates, match reasons, lookups), `searchbug_errors.json` |
 
 Every run is also kept in `data/runs/<run_id>/<stage>/`.
 
@@ -99,8 +123,12 @@ dropped for each reason, finalized, Google links resolved). The same entry is sa
   (similar headlines, same place/road and date, same victim age and type, overlapping text).
   Victim type and age never split an incident: one crash can have several victims.
 - **Severity screening** (stage 4) sends the full text of every article of an incident to JEV
-  (`JEV_API_URL`, `JEV_API_KEY`, `JEV_MODEL` in `.env`; OpenAI chat-completions format). JEV
-  extracts the facts and proposes a status; `decision.py` recomputes it from the facts:
+  (TypeSafe System One, `POST /v1/systemone`; `JEV_API_KEY` in `.env` is required, `JEV_API_URL` and
+  `JEV_MODEL` have defaults). JEV classifies rather than extracts: `questions.py` asks about the injury,
+  other party, fault, impairment, conflicts and whether the victim is named; answers below
+  `JEV_MIN_CONFIDENCE` count as "not reported". The date, location and age come from incident
+  grouping, and the victim name is not extracted (`(named in articles)`; lead verification finds it).
+  `decision.py` decides the status from those facts:
   `qualified`, `victim_identity_unidentified` (name unknown), `fault_unidentified` (fault unknown),
   or `dropped` with a `drop_reason` (codes + text). Drop codes: ruled out by the evidence
   (`injury_not_catastrophic`, `no_other_party`, `victim_at_fault`, `own_driver_at_fault`,

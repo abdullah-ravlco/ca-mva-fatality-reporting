@@ -48,6 +48,9 @@ class Victim(BaseModel):
     impaired: Literal["yes", "no", "unknown"] = "unknown"
     impaired_quote: Optional[str] = None
     impaired_source_url: Optional[str] = None
+    # "quoted": fault/impairment come with a quote (checked in decision.supported_claims);
+    # "classified": JEV classified them from the articles and gave no quote.
+    evidence: Literal["quoted", "classified"] = "quoted"
 
     @field_validator("name", "injury_quote", "injury_source_url", "rode_with", "fault_quote",
                      "fault_source_url", "impaired_quote", "impaired_source_url", mode="before")
@@ -107,6 +110,9 @@ class JevResult(BaseModel):
     victims: List[Victim] = Field(default_factory=list)
     other_party: OtherParty = Field(default_factory=OtherParty)
     conflicts: List[str] = Field(default_factory=list)
+    in_california: Literal["yes", "no", "unknown"] = "unknown"
+    road_crash: Literal["yes", "no", "unknown"] = "unknown"  # a land vehicle crash, not a plane, boat, animal or assault
+    fault_unsure: Optional[str] = None  # set when "victim at fault" was too uncertain to drop the case
     case_status: Literal[STATUSES] = "dropped"
     drop_reasons: List[str] = Field(default_factory=list)
     tags: List[str] = Field(default_factory=list)

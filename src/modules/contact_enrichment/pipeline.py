@@ -4,9 +4,10 @@
 Input:  data/lead_verification/verified_leads.json  (verdict "qualifies")
         data/severity_screening/passed_leads.json   (article text: relationships named in the news)
 Output: data/contact_enrichment/contacts.json         - short: one entry per deceased person
-        data/contact_enrichment/contacts.csv          - the same as a table: one row per deceased person
-                                                        with up to 2 next of kin, closest first
-                                                        (spouse, children, parents, siblings, others)
+        data/contact_enrichment/contacts.csv          - the team's mailer layout: one row per deceased person
+                                                        (name, death date, aliases, address, phones, age,
+                                                        locations, accident notes), then match status and
+                                                        up to 2 next of kin, closest first
         data/contact_enrichment/contacts_details.json - every candidate, match reasons, lookups made
         data/contact_enrichment/searchbug_errors.json - every failed SearchBug call
 
@@ -201,6 +202,12 @@ def targets(leads):
                 "crash_date": lead.get("crash_date"),
                 "cities": list(dict.fromkeys(cities)),
                 "sources": lead.get("sources") or [],
+                # from lead verification, for the mailer notes
+                "residence": person.get("residence"),
+                "crash_location": lead.get("crash_location"),
+                "role": person.get("role"),
+                "at_fault": person.get("at_fault"),
+                "fault_explanation": person.get("fault_explanation"),
             })
     return out
 
@@ -212,10 +219,27 @@ def article_texts(incident_id, passed):
     return []
 
 
+def aliases(names, reported_name):
+    """Other names SearchBug has for the person (not the reported name itself)."""
+    reported = " ".join((reported_name or "").lower().split())
+    return [n for n in dict.fromkeys(names) if " ".join(n.lower().split()) != reported]
+
+
+def other_locations(addresses, limit=3):
+    """'Town, ST' of earlier addresses (not the current one), most recent first."""
+    current = (addresses[0].get("city"), addresses[0].get("state")) if addresses else None
+    places = []
+    for address in addresses[1:]:
+        place = (address.get("city"), address.get("state"))
+        if address.get("city") and place != current and place not in places:
+            places.append(place)
+    return [", ".join(p for p in place if p) for place in places[:limit]]
+
+
 def enrich(lookups, target, texts):
     """(short_entry, detail_entry) for one deceased person."""
-    base = {"incident_id": target["incident_id"], "name": target["name"], "age": target["age"],
-            "crash_date": target["crash_date"]}
+    base = {key: target.get(key) for key in ("incident_id", "name", "age", "crash_date", "residence",
+                                             "crash_location", "role", "at_fault", "fault_explanation")}
     if not target["name"] or not split_name(target["name"])[0]:
         return dict(base, match=NO_NAME, deceased=None, relatives=[]), dict(base, match=NO_NAME)
 
@@ -227,10 +251,19 @@ def enrich(lookups, target, texts):
 
     relatives = [relative_contact(lookups, r, texts)
                  for r in closest_relatives(chosen["relatives"], texts, config.MAX_RELATIVES)]
+    current = chosen["addresses"][0] if chosen["addresses"] else {}
     deceased = {
         "dob": next((d["date"] for d in chosen["dobs"] if d["date"]), None),
         "date_of_death": next((d["date"] for d in chosen["dods"] if d["date"]), None),
-        "last_address": chosen["addresses"][0]["address"] if chosen["addresses"] else None,
+        "last_address": current.get("address"),
+        "street": current.get("street"),
+        "town": current.get("city"),
+        "county": current.get("county"),
+        "state": current.get("state"),
+        "zip": current.get("zip"),
+        "other_locations": other_locations(chosen["addresses"]),
+        "aliases": aliases(chosen["names"], target["name"]),
+        "gender": chosen.get("gender"),
         "phones": most_recent_phones(chosen["phones"], config.MAX_PHONES),
         "searchbug_token": chosen["token"],
     }
@@ -241,50 +274,103 @@ def enrich(lookups, target, texts):
                 relatives=relatives), detail
 
 
-DECEASED_COLUMNS = [
-    "incident_id", "crash_date", "match_status",
-    "deceased_name", "deceased_age", "deceased_dob", "deceased_date_of_death", "deceased_last_address",
-    "deceased_phones", "relatives_on_record",
+# The team's mailer layout (one row per deceased person). Columns we have no source for yet
+# (Mailing Date, Children, Homeowner, Married, Net Worth, Income Range, Death Location, Been
+# Verified) stay empty for the team to fill. Our own columns follow, so every row can be traced.
+MAILER_COLUMNS = [
+    "#", "Mailing Date", "First Name", "Last Name", "Death Date", "Aliases", "Address", "Town", "County",
+    "ST", "Zip", "Phone1", "Phone2", "Phone3", "Age", "Age Range", "Children", "Gender", "Homeowner",
+    "Married", "Net Worth", "Income Range", "Residence", "Death Location", "Incident Location",
+    "Other Locations", "Notes on accident and/or mailer recipient", "Been Verified",
 ]
-RELATIVE_FIELDS = ["name", "relationship", "relationship_source", "address", "phones", "emails"]
-CSV_COLUMNS = DECEASED_COLUMNS + [
-    f"next_of_kin_{i}_{field}" for i in range(1, config.MAX_RELATIVES + 1) for field in RELATIVE_FIELDS
+NEXT_OF_KIN_FIELDS = ["Name", "Relationship", "Address", "Phones"]
+EXTRA_COLUMNS = ["Match Status", "Incident ID", "DOB", "Relatives on Record"] + [
+    f"Next of Kin {i} {field}" for i in range(1, config.MAX_RELATIVES + 1) for field in NEXT_OF_KIN_FIELDS
 ]
-
-
-CELL_SEPARATOR = " | "  # between several values in one cell (phones, emails)
+CSV_COLUMNS = MAILER_COLUMNS + EXTRA_COLUMNS
+CELL_SEPARATOR = " | "  # between several values in one cell
+NAME_SUFFIXES = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "v"}
+ROLE_WORDS = {"driver": "driver", "passenger": "passenger", "pedestrian": "pedestrian", "cyclist": "cyclist",
+              "motorcyclist": "motorcyclist", "other": "other", "unknown": "unknown"}
 
 
 def _phones(phones):
     return CELL_SEPARATOR.join(f"{p['number']} ({p['type']})" if p.get("type") else p["number"] for p in phones or [])
 
 
+def first_last(name):
+    words = (name or "").split()
+    while len(words) > 2 and words[-1].lower().strip(",") in NAME_SUFFIXES:
+        words = words[:-1]
+    return (words[0], words[-1]) if len(words) >= 2 else ((words[0], None) if words else (None, None))
+
+
+def age_range(age):
+    """10-year bands: 46 -> '40-49'."""
+    if not isinstance(age, int):
+        return None
+    low = age // 10 * 10
+    return f"{low}-{low + 9}"
+
+
+def gender_letter(value):
+    letter = (value or "").strip()[:1].upper()
+    return letter if letter in ("M", "F") else None
+
+
+def accident_notes(entry):
+    """'Manner: Accident (MVA). Role: passenger. Not at fault (reason).' plus a warning for an
+    unconfirmed identity."""
+    fault = {"no": "Not at fault", "yes": "At fault"}.get(entry.get("at_fault"), "Fault not established")
+    explanation = (entry.get("fault_explanation") or "").strip().rstrip(".")
+    notes = f"Manner: Accident (MVA). Role: {ROLE_WORDS.get(entry.get('role'), 'unknown')}. {fault}"
+    notes += f" ({explanation}.)." if explanation else "."
+    if entry.get("match") == POSSIBLE:
+        notes += " Identity not confirmed: SearchBug record matches name and age only; check before mailing."
+    elif entry.get("match") == AMBIGUOUS:
+        notes += " Several SearchBug records match; choose the right one before mailing."
+    return notes
+
+
 def csv_rows(entries):
-    """One row per deceased person; next of kin side by side, closest first (next_of_kin_1 = closest)."""
+    """One row per deceased person in the team's mailer layout, then match status, incident id,
+    date of birth and the next of kin (closest first)."""
     rows = []
-    for entry in entries:
+    for number, entry in enumerate(entries, start=1):
         deceased = entry.get("deceased") or {}
-        relatives = entry.get("relatives") or []
+        phones = deceased.get("phones") or []
+        first, last = first_last(entry.get("name"))
         row = {
-            "incident_id": entry.get("incident_id"),
-            "crash_date": entry.get("crash_date"),
-            "match_status": entry.get("match"),
-            "deceased_name": entry.get("name"),
-            "deceased_age": entry.get("age"),
-            "deceased_dob": deceased.get("dob"),
-            "deceased_date_of_death": deceased.get("date_of_death"),
-            "deceased_last_address": deceased.get("last_address"),
-            "deceased_phones": _phones(deceased.get("phones")),
-            "relatives_on_record": entry.get("relatives_on_record", len(relatives)),
+            "#": number,
+            "First Name": first,
+            "Last Name": last,
+            "Death Date": deceased.get("date_of_death") or entry.get("crash_date"),
+            "Aliases": "; ".join(deceased.get("aliases") or []),
+            "Address": deceased.get("street"),
+            "Town": deceased.get("town"),
+            "County": deceased.get("county"),
+            "ST": deceased.get("state"),
+            "Zip": deceased.get("zip"),
+            "Age": entry.get("age"),
+            "Age Range": age_range(entry.get("age")),
+            "Gender": gender_letter(deceased.get("gender")),
+            "Residence": entry.get("residence"),
+            "Incident Location": entry.get("crash_location"),
+            "Other Locations": "; ".join(deceased.get("other_locations") or []),
+            "Notes on accident and/or mailer recipient": accident_notes(entry),
+            "Match Status": entry.get("match"),
+            "Incident ID": entry.get("incident_id"),
+            "DOB": deceased.get("dob"),
+            "Relatives on Record": entry.get("relatives_on_record", len(entry.get("relatives") or [])),
         }
-        for i, relative in enumerate(relatives[:config.MAX_RELATIVES], start=1):
+        for i, phone in enumerate(phones[:3], start=1):
+            row[f"Phone{i}"] = f"{phone['number']} ({phone['type']})" if phone.get("type") else phone["number"]
+        for i, relative in enumerate((entry.get("relatives") or [])[:config.MAX_RELATIVES], start=1):
             row.update({
-                f"next_of_kin_{i}_name": relative.get("name"),
-                f"next_of_kin_{i}_relationship": relative.get("relationship"),
-                f"next_of_kin_{i}_relationship_source": relative.get("relationship_source"),
-                f"next_of_kin_{i}_address": relative.get("address"),
-                f"next_of_kin_{i}_phones": _phones(relative.get("phones")),
-                f"next_of_kin_{i}_emails": CELL_SEPARATOR.join(relative.get("emails") or []),
+                f"Next of Kin {i} Name": relative.get("name"),
+                f"Next of Kin {i} Relationship": relative.get("relationship"),
+                f"Next of Kin {i} Address": relative.get("address"),
+                f"Next of Kin {i} Phones": _phones(relative.get("phones")),
             })
         rows.append(row)
     return rows

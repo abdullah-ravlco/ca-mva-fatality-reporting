@@ -25,7 +25,9 @@ import argparse
 import logging
 import os
 import sys
+from datetime import datetime, timezone
 
+from src.core import db
 from src.core.logger import configure_logging
 from src.core.outputs import RUN_ID_ENV, new_run_id
 from src.modules.contact_enrichment import pipeline as contact_enrichment
@@ -70,6 +72,26 @@ def run_stage(stage):
         return False
 
 
+def save_to_database(stage, started_at, ok):
+    """Load the stage's JSON output into the Postgres tables (when a database is configured).
+
+    A database problem is logged and never stops the run: the JSON files are complete, and
+    `python -m src.core.migrate_to_postgres` loads them later."""
+    if not db.enabled():
+        return
+    from src.core import db_sync  # only needed with a database
+
+    try:
+        counts = db_sync.sync_stage(stage) if ok else {}
+        db_sync.record_run(stage, started_at, datetime.now(timezone.utc), ok)
+        if ok:
+            logger.info("Database (%s): %s saved %s", db.describe(), stage, counts)
+    except Exception as error:
+        db.reset()
+        logger.error("Database (%s): could not save %s: %s: %s. The JSON files are complete; load them later "
+                     "with: python -m src.core.migrate_to_postgres", db.describe(), stage, type(error).__name__, error)
+
+
 def main():
     args = parse_args()
     stages = [stage for stage in STAGE_ORDER if stage in (args.stages or STAGE_ORDER)]
@@ -81,7 +103,10 @@ def main():
 
     for stage in stages:
         logger.info("===== Running stage: %s =====", stage)
-        if not run_stage(stage):
+        started_at = datetime.now(timezone.utc)
+        ok = run_stage(stage)
+        save_to_database(stage, started_at, ok)
+        if not ok:
             logger.error("Stopping: stage %s did not complete; later stages were not run.", stage)
             sys.exit(1)
 

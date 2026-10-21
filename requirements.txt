@@ -11,3 +11,4 @@ pytest
 pandas
 dagster
 dagster-webserver
+psycopg[binary]

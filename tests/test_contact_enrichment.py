@@ -205,14 +205,21 @@ def test_stage_writes_json_and_csv_and_reuses_the_cache(sandbox):
     assert by_name["Sam Doe"]["match"] == "not_found"
 
     rows = list(csv.DictReader((sandbox / "contact_enrichment" / "contacts.csv").open(encoding="utf-8-sig")))
-    assert [r["deceased_name"] for r in rows] == ["Maria Lopez", "Sam Doe"]           # one row per deceased person
+    assert [(r["First Name"], r["Last Name"]) for r in rows] == [("Maria", "Lopez"), ("Sam", "Doe")]  # one row each
     maria_row = rows[0]
-    assert maria_row["relatives_on_record"] == "2" and maria_row["deceased_phones"] == "5595550101 (Wireless)"
-    assert (maria_row["next_of_kin_1_name"], maria_row["next_of_kin_1_relationship"]) == ("John Lopez", "husband")
-    assert (maria_row["next_of_kin_2_name"], maria_row["next_of_kin_2_relationship"]) == ("Rosa Diaz", "mother")
-    assert maria_row["next_of_kin_1_phones"] == "5595550199 (Landline)"
-    assert rows[1]["match_status"] == "not_found" and rows[1]["next_of_kin_1_name"] == ""
-    assert "next_of_kin_3_name" not in maria_row  # at most 2 next of kin
+    assert maria_row["#"] == "1" and maria_row["Death Date"] == "2026-09-12" and maria_row["Age Range"] == "30-39"
+    assert (maria_row["Address"], maria_row["Town"], maria_row["ST"], maria_row["Zip"]) == ("12 Elm St", "FRESNO", "CA", "93701")
+    assert maria_row["Phone1"] == "5595550101 (Wireless)" and maria_row["Phone3"] == ""
+    assert maria_row["Other Locations"] == "MADERA, CA" and maria_row["Incident Location"] == "Highway 99, Fresno"
+    assert maria_row["Notes on accident and/or mailer recipient"].startswith("Manner: Accident (MVA). Role:")
+    assert maria_row["Relatives on Record"] == "2" and maria_row["Match Status"] == "matched"
+    assert (maria_row["Next of Kin 1 Name"], maria_row["Next of Kin 1 Relationship"]) == ("John Lopez", "husband")
+    assert (maria_row["Next of Kin 2 Name"], maria_row["Next of Kin 2 Relationship"]) == ("Rosa Diaz", "mother")
+    assert maria_row["Next of Kin 1 Phones"] == "5595550199 (Landline)"
+    assert rows[1]["Match Status"] == "not_found" and rows[1]["Next of Kin 1 Name"] == "" and rows[1]["Address"] == ""
+    assert "Next of Kin 3 Name" not in maria_row  # at most 2 next of kin
+    for column in ("Mailing Date", "Children", "Homeowner", "Married", "Net Worth", "Income Range", "Been Verified"):
+        assert column in maria_row  # the team's columns are all there, empty until filled
 
     paid = len(fake.calls)
     again = FakeSearchBug()
@@ -325,12 +332,24 @@ def test_possible_match_is_filled_in_but_keeps_its_status(sandbox):
 
     ce.main(Elsewhere())
     rows = list(csv.DictReader((sandbox / "contact_enrichment" / "contacts.csv").open(encoding="utf-8-sig")))
-    maria = next(r for r in rows if r["deceased_name"] == "Maria Lopez")
-    assert maria["match_status"] == "possible_match"
-    assert maria["deceased_dob"] == "1992-03-04" and maria["next_of_kin_1_name"] == "John Lopez"
-    assert maria["next_of_kin_1_phones"] == "5595550199 (Landline)"
+    maria = next(r for r in rows if r["Last Name"] == "Lopez")
+    assert maria["Match Status"] == "possible_match" and "Identity not confirmed" in maria["Notes on accident and/or mailer recipient"]
+    assert maria["DOB"] == "1992-03-04" and maria["Next of Kin 1 Name"] == "John Lopez"
+    assert maria["Next of Kin 1 Phones"] == "5595550199 (Landline)"
 
 
 def test_several_values_in_one_cell_are_separated_by_a_pipe():
     from src.modules.contact_enrichment.pipeline import _phones
     assert _phones([{"number": "5550000001", "type": "Mobile"}, {"number": "5550000002"}]) == "5550000001 (Mobile) | 5550000002"
+
+
+def test_mailer_helpers():
+    from src.modules.contact_enrichment.pipeline import accident_notes, age_range, first_last, gender_letter
+
+    assert first_last("Lucian Michael Piane III") == ("Lucian", "Piane")
+    assert age_range(46) == "40-49" and age_range(None) is None
+    assert gender_letter("Male") == "M" and gender_letter(None) is None
+    notes = accident_notes({"role": "passenger", "at_fault": "no", "match": "matched",
+                            "fault_explanation": "No public source assigns fault; the rollover cause remained under investigation."})
+    assert notes == ("Manner: Accident (MVA). Role: passenger. Not at fault (No public source assigns fault; "
+                     "the rollover cause remained under investigation.).")

@@ -12,6 +12,16 @@ from src.modules.lead_verification.qualification import assess
 from src.modules.lead_verification.schema import AgentAssessment, Fact, IncidentFacts, LeadResult, Person
 
 TODAY = date(2026, 10, 14)
+
+
+@pytest.fixture(autouse=True)
+def fixed_today(monkeypatch):
+    """incident_output measures the window from today; pin it so the fixed crash dates stay in window."""
+    from datetime import datetime, timezone
+
+    from src.modules.lead_verification import pipeline
+
+    monkeypatch.setattr(pipeline, "reference_time", lambda: datetime(2026, 10, 14, 18, 0, tzinfo=timezone.utc))
 TEXT = "The driver who struck him was arrested on suspicion of DUI, the CHP said Sunday. Maria Lopez, 34, of Fresno died."
 
 
@@ -200,7 +210,8 @@ def test_short_output_has_only_the_required_fields():
                           "other_party", "other_party_at_fault", "deceased", "missing", "corrections", "sources"}
     assert short["verdict"] == "qualifies" and short["crash_date"] == "2026-10-12"
     assert short["deceased"] == [{"name": "Maria Lopez", "age": 34, "residence": "Fresno", "role": "pedestrian",
-                                  "at_fault": "no", "fault_basis": "none", "impaired": "no"}]  # the injured driver is left out
+                                  "at_fault": "no", "fault_basis": "none", "fault_explanation": None,
+                                  "impaired": "no"}]  # the injured driver is left out
     assert short["sources"] == ["https://a.com/1"]
 
 
