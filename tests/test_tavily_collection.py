@@ -6,6 +6,7 @@ from src.modules.source_collection.collectors.tavily import collect_tavily_sourc
 from src.modules.source_collection.records import make_source_result
 
 NOW = datetime(2026, 10, 14, 18, 0, tzinfo=timezone.utc)
+SINCE = datetime(2026, 10, 7, 18, 0, tzinfo=timezone.utc)  # the last run
 FEED = search_feeds()[0]
 STORY = (
     "A pedestrian was struck and killed in a crash on Oct. 12 in Fresno, California, "
@@ -23,7 +24,7 @@ def test_tavily_result_becomes_a_news_record():
     })
     result = make_source_result(FEED["name"], FEED["url"], NOW, FEED["kind"])
     # No client and no fetch budget: raw_content alone must be enough.
-    records, seen, skipped = records_from_items(FEED, [item], "Tavily", NOW, 168, ArticleTextFetcher(None, 0), result)
+    records, seen, skipped = records_from_items(FEED, [item], "Tavily", NOW, SINCE, ArticleTextFetcher(None, 0), result)
 
     assert seen == 1 and not skipped
     record = records[0]
@@ -38,4 +39,4 @@ def test_tavily_result_becomes_a_news_record():
 
 
 def test_missing_api_key_skips_tavily():
-    assert collect_tavily_sources(client=None, now=NOW, api_key=None) == ([], [])
+    assert collect_tavily_sources(client=None, now=NOW, since=SINCE, api_key=None) == ([], [])

@@ -3,7 +3,7 @@
 1. Same link: records with the same canonical URL are merged into one.
 2. Not on topic: stories that are not about a deadly road crash are removed
    (see topic.py). Where the crash happened is NOT checked.
-3. Too old: a story published before the lookback window is removed. A story without a
+3. Too old: a story published before the window start is removed. A story without a
    publication date is kept.
 4. Low-value source: law-firm marketing, social media posts and unverifiable aggregators
    are removed (see source_quality.py).
@@ -68,7 +68,7 @@ def outside_california(record):
     return is_other_state_outlet(source) and not has_california_indicator(text)
 
 
-def finalize(records, now, hours):
+def finalize(records, now, since):
     """(finalized_records, counts) after the same-link, source, topic, location and age filters."""
     unique, same_link = remove_same_link(records)
     counts = Counter(duplicate_links=len(same_link))
@@ -86,7 +86,7 @@ def finalize(records, now, hours):
             counts["outside_california"] += 1
             continue
         published = parse_date(record.get("published_date"))
-        if published is not None and not is_recent(published, now=now, hours=hours):
+        if published is not None and not is_recent(published, since, now=now):
             counts["published_before_window"] += 1
             continue
         kept.append(record)

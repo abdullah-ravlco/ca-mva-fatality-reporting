@@ -32,14 +32,6 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 
 # --------------------------------------------------
-# Collection window
-# --------------------------------------------------
-
-# How far back, in hours, crashes and articles are collected: the last 10 days up to now.
-# Set LOOKBACK_HOURS in .env to change it.
-LOOKBACK_HOURS = int(os.getenv("LOOKBACK_HOURS") or 240)
-
-# --------------------------------------------------
 # Shared HTTP / timezone defaults (used by src/core)
 # --------------------------------------------------
 

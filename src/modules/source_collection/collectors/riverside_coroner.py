@@ -117,7 +117,7 @@ def describe(fields):
     return " | ".join(f"{k}: {v}" for k, v in clean.items() if k not in SKIPPED_LABELS)
 
 
-def collect_riverside_coroner(source, client, now, hours):
+def collect_riverside_coroner(source, client, now, since):
     result = make_source_result(source["name"], source["url"], now, "coroner")
     records = []
 
@@ -141,11 +141,11 @@ def collect_riverside_coroner(source, client, now, hours):
         published = item["published_at"]
 
         if incident is not None:
-            if not is_recent(incident, now=now, hours=hours, date_only=True):
+            if not is_recent(incident, since, now=now, date_only=True):
                 skipped["incident_outside_window"] += 1
                 continue
             status = RECENT
-        elif published is not None and is_recent(published, now=now, hours=hours, date_only=True):
+        elif published is not None and is_recent(published, since, now=now, date_only=True):
             status = DATE_UNKNOWN  # e.g. "Date of Injury: Under Investigation"
         else:
             skipped["incident_outside_window"] += 1

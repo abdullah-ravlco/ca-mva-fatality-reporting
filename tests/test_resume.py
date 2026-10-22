@@ -2,6 +2,7 @@
 
 import json
 import threading
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,8 @@ from src.core.checkpoint import Checkpoint
 from src.modules.link_extraction import pipeline as link
 from src.modules.source_collection import raw_collection
 
+NOW = datetime(2026, 10, 14, 18, 0, tzinfo=timezone.utc)
+SINCE = datetime(2026, 10, 7, 18, 0, tzinfo=timezone.utc)  # the last run
 TEXT = "A driver was killed in a crash on Highway 99 in Fresno, California, the CHP said on Oct. 13. " * 4
 
 
@@ -30,7 +33,7 @@ def sandbox(tmp_path, monkeypatch):
          "url": f"https://outlet{i}.com/story-{i}", "description": "CHP says"}
         for i in range(60)
     ]
-    finalized.write_text(json.dumps({"items": items}))
+    finalized.write_text(json.dumps({"window_start": "2026-10-01T00:00:00+00:00", "items": items}))
     monkeypatch.setattr(link, "INPUT_FILE", finalized)
     return tmp_path
 
@@ -84,7 +87,7 @@ def test_stage1_finished_searches_are_saved_before_the_run_ends(tmp_path):
 
     path = tmp_path / "collection_progress.jsonl"
     with pytest.raises(KeyboardInterrupt):
-        raw_collection.collect_rss(Client(), Checkpoint(path, "sig"))
+        raw_collection.collect_rss(Client(), SINCE, NOW, Checkpoint(path, "sig"))
 
     saved = len(path.read_text().splitlines()) - 1
     assert 15 <= saved <= 20                                          # the finished searches are on disk
@@ -96,8 +99,8 @@ def test_stage1_finished_searches_are_saved_before_the_run_ends(tmp_path):
             seen.append(url)
             return SimpleNamespace(content=rss)
 
-    raw_collection.collect_rss(CountingClient(), Checkpoint(path, "sig"))
-    assert len(seen) == len(raw_collection.google_news_feeds()) + len(raw_collection.NEWS_RSS_FEEDS) - saved
+    raw_collection.collect_rss(CountingClient(), SINCE, NOW, Checkpoint(path, "sig"))
+    assert len(seen) == len(raw_collection.google_news_feeds(SINCE, NOW)) + len(raw_collection.NEWS_RSS_FEEDS) - saved
 
 
 def test_all_raw_is_written_while_the_searches_run(tmp_path, monkeypatch):
@@ -123,7 +126,7 @@ def test_all_raw_is_written_while_the_searches_run(tmp_path, monkeypatch):
         def get(self, url):
             return SimpleNamespace(content=rss)
 
-    raw_collection.collect_rss(Client(), checkpoint, on_progress)
+    raw_collection.collect_rss(Client(), SINCE, NOW, checkpoint, on_progress)
 
     assert sizes and all(complete is False for complete, _ in sizes)   # the file exists before the end
     assert [n for _, n in sizes] == sorted(n for _, n in sizes) and sizes[-1][1] > sizes[0][1]  # and grows

@@ -1,8 +1,8 @@
 
-"""Date parsing and rolling lookback-window checks."""
+"""Date parsing and collection-window checks (the window runs from the last run to now)."""
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from zoneinfo import ZoneInfo
 
@@ -31,7 +31,7 @@ def utc_now():
 
 
 def reference_time():
-    """The moment the lookback window is measured back from: now."""
+    """The end of the collection window: now."""
     return utc_now()
 
 
@@ -100,8 +100,8 @@ def find_date_in_text(text):
     return None, None
 
 
-def is_recent(published_at, now=None, hours=96, date_only=False):
-    """Check whether a timestamp falls within the lookback window."""
+def is_recent(published_at, since, now=None, date_only=False):
+    """Check whether a timestamp falls within the window from `since` to now."""
     if published_at is None:
         return False
 
@@ -115,7 +115,7 @@ def is_recent(published_at, now=None, hours=96, date_only=False):
 
     now = now.astimezone(timezone.utc)
     published_at = published_at.astimezone(timezone.utc)
-    cutoff = now - timedelta(hours=hours)
+    cutoff = since.astimezone(timezone.utc) if since.tzinfo else since.replace(tzinfo=timezone.utc)
 
     if date_only:
         local_day = published_at.astimezone(PACIFIC).date()
