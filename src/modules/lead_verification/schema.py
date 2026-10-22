@@ -14,7 +14,6 @@ REASONS = (
     "deceased_impaired",              # every deceased person was reported impaired (DUI, drunk, drugs)
     "deceased_at_fault",              # every deceased person was reported at fault
     "outside_california",
-    "outside_window",                 # crash older than the lookback window
     "insufficient_information",
 )
 FAULT_BASES = (

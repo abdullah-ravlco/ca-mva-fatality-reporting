@@ -7,7 +7,6 @@ Skipped entirely when TAVILY_API_KEY is not set.
 """
 
 import logging
-from datetime import timedelta
 from urllib.parse import urlsplit
 
 import requests
@@ -18,7 +17,7 @@ from src.modules.source_collection.article_text import ArticleTextFetcher
 from src.modules.source_collection.collectors.rss import records_from_items
 from src.modules.source_collection.records import make_source_result
 from src.modules.source_collection.sources import (
-    LOOKBACK_HOURS, MAX_ARTICLE_FETCHES, TAVILY_MAX_RESULTS, TAVILY_QUERIES, TAVILY_SEARCH_URL,
+    MAX_ARTICLE_FETCHES, TAVILY_MAX_RESULTS, TAVILY_QUERIES, TAVILY_SEARCH_URL,
 )
 
 
@@ -39,15 +38,15 @@ def search_feeds():
     ]
 
 
-def search(query, api_key, now, hours):
-    """Raw Tavily results for one query, published within the lookback window."""
+def search(query, api_key, since):
+    """Raw Tavily results for one query, published since the window start."""
     response = requests.post(
         TAVILY_SEARCH_URL,
         headers={"Authorization": f"Bearer {api_key}"},
         json={
             "query": query,
             "topic": "news",
-            "start_date": (now - timedelta(hours=hours)).date().isoformat(),
+            "start_date": since.date().isoformat(),
             "max_results": TAVILY_MAX_RESULTS,
             "include_raw_content": "text",
         },
@@ -74,7 +73,7 @@ def to_item(result):
     return item
 
 
-def collect_tavily_sources(client, now, hours=LOOKBACK_HOURS, api_key=TAVILY_API_KEY):
+def collect_tavily_sources(client, now, since, api_key=TAVILY_API_KEY):
     if not api_key:
         logger.warning("TAVILY_API_KEY not set; Tavily search skipped.")
         return [], []
@@ -88,7 +87,7 @@ def collect_tavily_sources(client, now, hours=LOOKBACK_HOURS, api_key=TAVILY_API
         logger.info("Tavily search: %s", feed["query"])
 
         try:
-            items = [to_item(r) for r in search(feed["query"], api_key, now, hours)]
+            items = [to_item(r) for r in search(feed["query"], api_key, since)]
         except (requests.RequestException, ValueError) as error:
             result["http_status"] = error_status(error)
             result["error"] = str(error)
@@ -98,7 +97,7 @@ def collect_tavily_sources(client, now, hours=LOOKBACK_HOURS, api_key=TAVILY_API
 
         result["http_status"] = 200
         records, items_seen, skipped = records_from_items(
-            feed, items, "Tavily", now, hours, fetcher, result
+            feed, items, "Tavily", now, since, fetcher, result
         )
 
         result["items_seen"] = items_seen

@@ -6,6 +6,7 @@ Written two ways:
 """
 
 from config.settings import DATA_DIR
+from src.core.date_utils import parse_date
 from src.core.outputs import read_json, run_id, write_json_atomic, write_stage_json
 
 
@@ -38,3 +39,30 @@ def write_history(entry):
     history.append(entry)
     write_json_atomic(HISTORY_FILE, history)
     return HISTORY_FILE
+
+
+def last_run_start():
+    """When the last run that collected anything started, or None when there is no such run.
+
+    A run where every source failed is skipped, so its gap is collected by the next run."""
+    history = read_json(HISTORY_FILE, default=[])
+    starts = [parse_date(e.get("run_at")) for e in history if isinstance(e, dict) and e.get("all_raw")]
+    return max((start for start in starts if start), default=None)
+
+
+def window_start(since=None):
+    """Where this run's collection window starts: `since` when given, else the last run's start.
+
+    The first run has no earlier run, so it needs `since` (e.g. --since 2026-10-01)."""
+    if since:
+        start = parse_date(since)
+        if start is None:
+            raise ValueError(f"Cannot read --since {since!r}; use a date such as 2026-10-01.")
+        return start
+    start = last_run_start()
+    if start is None:
+        raise ValueError(
+            "No earlier source_collection run found in " + str(HISTORY_FILE) + ", so there is no window start. "
+            "For the first run, pass one: python -m src.main --since 2026-10-01"
+        )
+    return start

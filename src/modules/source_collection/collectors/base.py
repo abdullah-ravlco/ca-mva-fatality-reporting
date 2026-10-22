@@ -107,7 +107,7 @@ def extract_article_metadata(html):
     }
 
 
-def collect_from_source(source, client, now, hours):
+def collect_from_source(source, client, now, since):
     """Collect recent candidate articles from one listing page."""
 
     result = make_source_result(source["name"], source["url"], now, "official_listing")
@@ -166,7 +166,7 @@ def collect_from_source(source, client, now, hours):
             records.append(record)
             continue
 
-        if not is_recent(listing_date, now=now, hours=hours, date_only=listing_date_only):
+        if not is_recent(listing_date, since, now=now, date_only=listing_date_only):
             skipped["published_outside_window"] += 1  # known old: not fetched or saved
             add_example(result, "published_outside_window", link_title, article_url)
             continue
@@ -186,7 +186,7 @@ def collect_from_source(source, client, now, hours):
 
         if article_date is None:
             record.update(published_at=iso(listing_date), status=RECENT_LISTING_DATE)
-        elif is_recent(article_date, now=now, hours=hours, date_only=metadata["date_only"]):
+        elif is_recent(article_date, since, now=now, date_only=metadata["date_only"]):
             record.update(published_at=iso(article_date), status=RECENT)
         else:
             # The article's own date contradicts the listing date: flag for review.

@@ -19,6 +19,9 @@ never run on stale input.
 Usage:
   python -m src.main                 # run every stage, in order
   python -m src.main --stage STAGE   # run one stage (repeatable)
+  python -m src.main --since DATE    # first run only: where collection starts (e.g. 2026-10-01)
+
+Collection covers the time from the start of the last run up to now; there is no fixed lookback.
 """
 
 import argparse
@@ -60,13 +63,18 @@ def parse_args():
         dest="stages",
         help="Run only this stage (repeatable). Default: run every stage, in order.",
     )
+    parser.add_argument(
+        "--since",
+        help="Where source collection starts (a date, e.g. 2026-10-01). Needed on the first run; "
+             "later runs start where the last one did.",
+    )
     return parser.parse_args()
 
 
-def run_stage(stage):
+def run_stage(stage, **options):
     """True when the stage finished successfully."""
     try:
-        return STAGES[stage]() is not False
+        return STAGES[stage](**options) is not False
     except Exception:
         logger.exception("Stage %s failed", stage)
         return False
@@ -104,7 +112,7 @@ def main():
     for stage in stages:
         logger.info("===== Running stage: %s =====", stage)
         started_at = datetime.now(timezone.utc)
-        ok = run_stage(stage)
+        ok = run_stage(stage, **({"since": args.since} if stage == "source_collection" else {}))
         save_to_database(stage, started_at, ok)
         if not ok:
             logger.error("Stopping: stage %s did not complete; later stages were not run.", stage)

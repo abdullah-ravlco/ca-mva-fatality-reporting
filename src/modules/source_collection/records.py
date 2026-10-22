@@ -78,12 +78,12 @@ def make_record(
 
 
 REASON_NO_DATE = "crash date not found in story text"
-REASON_OUTSIDE = "crash date is outside the lookback window"
+REASON_OUTSIDE = "crash date is before the collection window"
 REASON_LOCATION = "California location not confirmed"
 BASE_REASONS = {REASON_NO_DATE, REASON_OUTSIDE, REASON_LOCATION}
 
 
-def news_status(incident_date, location_status, now, hours):
+def news_status(incident_date, location_status, now, since):
     """(status, review_reasons) for a news record.
 
     Publication inside the window does not prove the crash was: the incident date
@@ -92,7 +92,7 @@ def news_status(incident_date, location_status, now, hours):
     reasons = []
     if incident_date is None:
         reasons.append(REASON_NO_DATE)
-    elif not is_recent(incident_date, now=now, hours=hours, date_only=True):
+    elif not is_recent(incident_date, since, now=now, date_only=True):
         reasons.append(REASON_OUTSIDE)
     if location_status != CALIFORNIA_CONFIRMED:
         reasons.append(REASON_LOCATION)
@@ -108,7 +108,7 @@ def news_status(incident_date, location_status, now, hours):
     return status, reasons
 
 
-def refresh_news_status(record, now, hours):
+def refresh_news_status(record, now, since):
     """Recompute a news record's status after deduplication filled in details.
 
     Extra reasons (blocked page, "crash happened earlier" notes) are kept. A record
@@ -119,7 +119,7 @@ def refresh_news_status(record, now, hours):
         return record
     says_earlier = record.get("incident_date_note_type") == NOTE_EARLIER
     incident_date = None if says_earlier else parse_date(record.get("incident_date"))
-    status, reasons = news_status(incident_date, record.get("location_status"), now, hours)
+    status, reasons = news_status(incident_date, record.get("location_status"), now, since)
     extra = [r for r in record.get("review_reasons") or [] if r not in BASE_REASONS]
     record["status"] = status
     record["review_reasons"] = reasons + extra

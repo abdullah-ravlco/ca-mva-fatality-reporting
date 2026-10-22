@@ -15,7 +15,6 @@ import logging
 from collections import Counter
 from datetime import datetime, timezone
 
-from src.core.date_utils import PACIFIC, reference_time
 from src.core.logger import configure_logging
 from src.core.outputs import read_json, write_stage_json
 from src.modules.lead_verification.agent import check_quotes, run_agent
@@ -63,7 +62,7 @@ def incident_output(incident, status, result=None, store=None, log=None, error=N
     corrections = apply_checks(result)  # remove claims the quotes do not support, before deciding
     data = check_quotes(result.model_dump(), store or {})
     output.update(
-        qualification=dict(assess(result, reference_time().astimezone(PACIFIC).date()), corrections=corrections),
+        qualification=dict(assess(result), corrections=corrections),
         incident=data["incident"],
         people=data["people"],
         missing_information=data["missing_information"],

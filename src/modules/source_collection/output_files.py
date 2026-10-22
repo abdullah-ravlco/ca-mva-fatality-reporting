@@ -7,6 +7,7 @@ finalized_raw.json - the same fields after removing same-link duplicates, storie
                      not about a deadly road crash, and stories older than the window
 """
 
+from src.core.date_utils import iso
 from src.core.outputs import write_stage_json
 
 
@@ -26,10 +27,10 @@ def write_all_raw(run_at, records, errors, complete=True):
     })
 
 
-def write_finalized_raw(run_at, lookback_hours, records, summary):
+def write_finalized_raw(run_at, window_start, records, summary):
     return write_stage_json(MODULE, FINALIZED_FILE, {
         "run_at": run_at,
-        "lookback_hours": lookback_hours,
+        "window_start": iso(window_start),
         "total_items": len(records),
         "summary": summary,
         "items": records,

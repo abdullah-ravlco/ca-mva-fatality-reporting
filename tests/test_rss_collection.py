@@ -4,6 +4,7 @@ from src.modules.source_collection.collectors.rss import records_from_feed
 from src.modules.source_collection.records import INCIDENT_DATE_UNVERIFIED, make_source_result
 
 NOW = datetime(2026, 10, 14, 18, 0, tzinfo=timezone.utc)
+SINCE = datetime(2026, 10, 7, 18, 0, tzinfo=timezone.utc)  # the last run
 FEED = {"name": "Test Feed", "url": "https://news.example/feed", "kind": "rss"}
 
 
@@ -25,7 +26,7 @@ def item(title, pub_date=None, description=""):
 
 def collect(content):
     result = make_source_result("Test Feed", FEED["url"], NOW, "rss")
-    records, _, skipped = records_from_feed(FEED, content, NOW, 168, NoPageFetcher(), result)
+    records, _, skipped = records_from_feed(FEED, content, NOW, SINCE, NoPageFetcher(), result)
     return records, skipped
 
 

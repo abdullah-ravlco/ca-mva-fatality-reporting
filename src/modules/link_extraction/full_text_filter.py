@@ -4,7 +4,7 @@ Source collection could often only read a headline (Google News links can't be
 opened there), so its crash-date and location checks were mostly "unknown". Here
 the same rules run on the article text:
 
-  drop - the text shows the crash is outside the lookback window, outside
+  drop - the text shows the crash is before the collection window, outside
          California, happened earlier (follow-up story), or is not a fatal road crash
   keep - everything else, including articles whose date/location stay unknown
 
@@ -18,7 +18,6 @@ from src.modules.source_collection.filters import looks_relevant
 from src.modules.source_collection.incident_dates import NOTE_EARLIER, find_incident_date
 from src.modules.source_collection.location import CALIFORNIA_CONFIRMED, OUTSIDE_CALIFORNIA, detect_location
 from src.modules.source_collection.records import INCIDENT_OUTSIDE_WINDOW, news_status
-from src.modules.source_collection.sources import LOOKBACK_HOURS
 
 KEEP = "keep"
 DROP = "drop"
@@ -40,7 +39,7 @@ def _official_facts(article):
     }
 
 
-def apply_full_text_filter(article, now, hours=LOOKBACK_HOURS):
+def apply_full_text_filter(article, now, since):
     """Add crash-date, location, status and filter_decision fields to one article record."""
     title = article.get("title") or ""
     text = article.get("text") or ""
@@ -62,13 +61,13 @@ def apply_full_text_filter(article, now, hours=LOOKBACK_HOURS):
                 incident_date_note_type=None,
             )
 
-    status, reasons = news_status(incident["incident_date"], location["location_status"], now, hours)
+    status, reasons = news_status(incident["incident_date"], location["location_status"], now, since)
     if incident["incident_date_note"]:
         reasons.append(incident["incident_date_note"])
 
     drop_reasons = []
     if status == INCIDENT_OUTSIDE_WINDOW:
-        drop_reasons.append("crash date in the article is outside the lookback window")
+        drop_reasons.append("crash date in the article is before the collection window")
     if incident["incident_date_note_type"] == NOTE_EARLIER:
         drop_reasons.append("article says the crash happened earlier")
     if location["location_status"] == OUTSIDE_CALIFORNIA:

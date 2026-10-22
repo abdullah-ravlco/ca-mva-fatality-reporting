@@ -23,7 +23,7 @@ from src.core.http_client import error_status
 from src.modules.source_collection.incident_dates import LOCAL_TZ, find_incident_date
 from src.modules.source_collection.location import detect_location
 from src.modules.source_collection.records import add_example, is_excluded_location, make_record, make_source_result, news_status
-from src.modules.source_collection.sources import LOOKBACK_HOURS, MAX_ARTICLE_FETCHES, NEWS_RSS_FEEDS, google_news_feeds
+from src.modules.source_collection.sources import MAX_ARTICLE_FETCHES, NEWS_RSS_FEEDS, google_news_feeds
 
 
 logger = logging.getLogger(__name__)
@@ -87,14 +87,14 @@ def split_google_title(title, publisher):
     return title
 
 
-def records_from_feed(feed, content, now, hours, fetcher, result):
+def records_from_feed(feed, content, now, since, fetcher, result):
     """Parse one feed. Returns (records, items_seen, skipped_counts)."""
     parsed = feedparser.parse(content)
     feed_title = parsed.feed.get("title") or feed["name"]
-    return records_from_items(feed, parsed.entries, feed_title, now, hours, fetcher, result)
+    return records_from_items(feed, parsed.entries, feed_title, now, since, fetcher, result)
 
 
-def records_from_items(feed, entries, feed_title, now, hours, fetcher, result):
+def records_from_items(feed, entries, feed_title, now, since, fetcher, result):
     """Filter feed items into records. Returns (records, items_seen, skipped_counts).
 
     Items are feedparser entries, or dicts with the same keys (title, link, summary,
@@ -140,9 +140,9 @@ def records_from_items(feed, entries, feed_title, now, hours, fetcher, result):
 
         published_at = parse_published_date(item)
 
-        # A story published before the window can't describe a crash inside it. A
+        # A story published before the window start can't describe a crash inside it. A
         # story with no publication date is kept: the crash date in its text decides.
-        if published_at is not None and not is_recent(published_at, now=now, hours=hours):
+        if published_at is not None and not is_recent(published_at, since, now=now):
             skip("published_outside_window", title)
             continue
 
@@ -163,7 +163,7 @@ def records_from_items(feed, entries, feed_title, now, hours, fetcher, result):
         incident = find_incident_date(
             " ".join(p for p in (title, summary, story) if p), published_at, reference_day=now.astimezone(LOCAL_TZ).date()
         )
-        status, reasons = news_status(incident["incident_date"], location["location_status"], now, hours)
+        status, reasons = news_status(incident["incident_date"], location["location_status"], now, since)
         if incident["incident_date_note"]:
             reasons.append(incident["incident_date_note"])
         if published_at is None:
@@ -206,10 +206,10 @@ def records_from_items(feed, entries, feed_title, now, hours, fetcher, result):
     return records, len(entries), skipped
 
 
-def collect_rss_sources(client, now, hours=LOOKBACK_HOURS):
+def collect_rss_sources(client, now, since):
     feeds = (
         [dict(feed, kind="rss") for feed in NEWS_RSS_FEEDS]
-        + google_news_feeds(hours)
+        + google_news_feeds(since, now)
     )
     fetcher = ArticleTextFetcher(client, MAX_ARTICLE_FETCHES)
 
@@ -234,7 +234,7 @@ def collect_rss_sources(client, now, hours=LOOKBACK_HOURS):
         result["http_status"] = response.status_code
 
         records, items_seen, skipped = records_from_feed(
-            feed, response.content, now, hours, fetcher, result
+            feed, response.content, now, since, fetcher, result
         )
 
         result["items_seen"] = items_seen

@@ -1,12 +1,12 @@
 
 """Configuration for California road-fatality source collection."""
 
+import math
 from urllib.parse import quote_plus
 
 from config.settings import (
     BROWSER_RETRY_ON_403,
     BROWSER_USER_AGENT,
-    LOOKBACK_HOURS,
     PUBLISHER_TIMEZONE,
     REQUEST_DELAY_SECONDS,
     REQUEST_TIMEOUT_SECONDS,
@@ -99,9 +99,9 @@ GOOGLE_NEWS_RSS_URL = (
 )
 
 
-def google_news_feeds(hours=LOOKBACK_HOURS):
-    """Build Google News RSS feeds for the configured lookback period."""
-    days = max(1, -(-hours // 24))
+def google_news_feeds(since, now):
+    """Build Google News RSS feeds covering the window from `since` to `now` (in whole days)."""
+    days = max(1, math.ceil((now - since).total_seconds() / 86400))
     period = f"when:{days}d"
 
     return [

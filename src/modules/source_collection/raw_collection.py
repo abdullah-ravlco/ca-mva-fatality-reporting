@@ -6,7 +6,6 @@ exactly these fields:
 """
 
 import logging
-from datetime import timedelta
 
 import feedparser
 import requests
@@ -18,7 +17,7 @@ from src.modules.source_collection.collectors.rss import (
     clean_html, normalize_link, parse_published_date, split_google_title,
 )
 from src.modules.source_collection.sources import (
-    LOOKBACK_HOURS, NEWS_RSS_FEEDS, SEARCH_WORKERS, TAVILY_MAX_RESULTS, TAVILY_QUERIES, TAVILY_SEARCH_URL,
+    NEWS_RSS_FEEDS, SEARCH_WORKERS, TAVILY_MAX_RESULTS, TAVILY_QUERIES, TAVILY_SEARCH_URL,
     TAVILY_WORKERS, google_news_feeds,
 )
 
@@ -71,13 +70,13 @@ def read_feed(client, feed, checkpoint=None):
     return records, None
 
 
-def collect_rss(client, checkpoint=None, on_progress=None):
-    """(records, errors) from the publisher feeds and the Google News searches.
+def collect_rss(client, since, now, checkpoint=None, on_progress=None):
+    """(records, errors) from the publisher feeds and the Google News searches for the window since `since`.
 
     Feeds are read in parallel; the client spaces requests to the same host, so the many
     Google News searches share one polite request rate while publisher feeds overlap.
     """
-    feeds = [dict(feed, kind="rss") for feed in NEWS_RSS_FEEDS] + google_news_feeds()
+    feeds = [dict(feed, kind="rss") for feed in NEWS_RSS_FEEDS] + google_news_feeds(since, now)
     results = []
     for result in parallel_map(lambda feed: read_feed(client, feed, checkpoint), feeds, SEARCH_WORKERS):
         results.append(result)
@@ -88,14 +87,14 @@ def collect_rss(client, checkpoint=None, on_progress=None):
     return records, errors
 
 
-def search_tavily(query, api_key, now, hours):
+def search_tavily(query, api_key, since):
     response = requests.post(
         TAVILY_SEARCH_URL,
         headers={"Authorization": f"Bearer {api_key}"},
         json={
             "query": query,
             "topic": "news",
-            "start_date": (now - timedelta(hours=hours)).date().isoformat(),
+            "start_date": since.date().isoformat(),
             "max_results": TAVILY_MAX_RESULTS,
         },
         timeout=REQUEST_TIMEOUT_SECONDS,
@@ -104,14 +103,14 @@ def search_tavily(query, api_key, now, hours):
     return response.json().get("results") or []
 
 
-def tavily_query(query, api_key, now, hours, checkpoint=None):
+def tavily_query(query, api_key, since, checkpoint=None):
     """(records, error) for one Tavily query. A query finished in an interrupted run is not paid for again."""
     done = checkpoint.get(f"tavily:{query}") if checkpoint else None
     if done is not None:
         return done["records"], None
     logger.info("Tavily search: %s", query)
     try:
-        results = search_tavily(query, api_key, now, hours)
+        results = search_tavily(query, api_key, since)
     except (requests.RequestException, ValueError) as error:
         logger.warning("  failed (%s): %s", query, error)
         return [], {"source": f"Tavily: {query}", "error": str(error)}
@@ -129,7 +128,7 @@ def tavily_query(query, api_key, now, hours, checkpoint=None):
     return records, None
 
 
-def collect_tavily(now, hours=LOOKBACK_HOURS, api_key=TAVILY_API_KEY, checkpoint=None, on_progress=None):
+def collect_tavily(since, api_key=TAVILY_API_KEY, checkpoint=None, on_progress=None):
     """(records, errors) from Tavily news search (queries run in parallel); skipped without a key."""
     if not api_key:
         logger.warning("TAVILY_API_KEY not set; Tavily search skipped.")
@@ -137,7 +136,7 @@ def collect_tavily(now, hours=LOOKBACK_HOURS, api_key=TAVILY_API_KEY, checkpoint
 
     results = []
     for result in parallel_map(
-        lambda query: tavily_query(query, api_key, now, hours, checkpoint), TAVILY_QUERIES, TAVILY_WORKERS
+        lambda query: tavily_query(query, api_key, since, checkpoint), TAVILY_QUERIES, TAVILY_WORKERS
     ):
         results.append(result)
         if on_progress:

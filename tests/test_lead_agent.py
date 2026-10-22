@@ -1,5 +1,4 @@
 import json
-from datetime import date
 from types import SimpleNamespace
 
 import pytest
@@ -11,17 +10,6 @@ from src.modules.lead_verification.quotes import quote_in_text
 from src.modules.lead_verification.qualification import assess
 from src.modules.lead_verification.schema import AgentAssessment, Fact, IncidentFacts, LeadResult, Person
 
-TODAY = date(2026, 10, 14)
-
-
-@pytest.fixture(autouse=True)
-def fixed_today(monkeypatch):
-    """incident_output measures the window from today; pin it so the fixed crash dates stay in window."""
-    from datetime import datetime, timezone
-
-    from src.modules.lead_verification import pipeline
-
-    monkeypatch.setattr(pipeline, "reference_time", lambda: datetime(2026, 10, 14, 18, 0, tzinfo=timezone.utc))
 TEXT = "The driver who struck him was arrested on suspicion of DUI, the CHP said Sunday. Maria Lopez, 34, of Fresno died."
 
 
@@ -52,15 +40,15 @@ def lead(people, **incident):
 # ---- qualification rules ----
 
 def test_pedestrian_killed_by_another_driver_qualifies():
-    assert assess(lead([victim()]), TODAY)["verdict"] == "qualifies"
+    assert assess(lead([victim()]))["verdict"] == "qualifies"
 
 
 def test_qualifies_with_open_items_while_fault_and_impairment_are_unknown():
-    result = assess(lead([victim(at_fault="unknown", impaired="unknown")]), TODAY)
+    result = assess(lead([victim(at_fault="unknown", impaired="unknown")]))
     assert result["verdict"] == "qualifies"
     # the other party's fault is established, so only the victim's impairment is still open
     assert result["open_items"] == ["impairment not reported for Maria Lopez"]
-    unknown_cause = assess(lead([victim(at_fault="unknown")], other_party_at_fault="unknown"), TODAY)
+    unknown_cause = assess(lead([victim(at_fault="unknown")], other_party_at_fault="unknown"))
     assert unknown_cause["verdict"] == "fault_unidentified" and "fault not yet reported for Maria Lopez" in unknown_cause["open_items"]
 
 
@@ -70,39 +58,39 @@ def test_unknown_placeholders_become_empty_values():
 
 
 def test_single_vehicle_crash_does_not_qualify():
-    result = assess(lead([victim(role="driver")], crash_type="single_vehicle", other_party_involved="no"), TODAY)
+    result = assess(lead([victim(role="driver")], crash_type="single_vehicle", other_party_involved="no"))
     assert result["verdict"] == "does_not_qualify" and "single_vehicle_no_other_party" in result["reasons"]
 
 
 def test_impaired_deceased_driver_does_not_qualify():
-    result = assess(lead([victim(role="driver", impaired="yes")]), TODAY)
+    result = assess(lead([victim(role="driver", impaired="yes")]))
     assert result["verdict"] == "does_not_qualify" and result["reasons"] == ["deceased_impaired"]
 
 
 def test_deceased_at_fault_does_not_qualify():
-    result = assess(lead([victim(at_fault="yes")]), TODAY)
+    result = assess(lead([victim(at_fault="yes")]))
     assert result["verdict"] == "does_not_qualify" and result["reasons"] == ["deceased_at_fault"]
 
 
 def test_passenger_qualifies_even_when_the_deceased_driver_was_impaired():
     people = [victim(role="driver", impaired="yes", name=fact("Driver")), victim(role="passenger", name=fact("Pass"))]
-    result = assess(lead(people), TODAY)
+    result = assess(lead(people))
     assert result["verdict"] == "qualifies"
     assert [p["can_be_claimant"] for p in result["per_person"]] == [False, True]
 
 
 def test_no_death_does_not_qualify_and_no_people_needs_review():
-    assert assess(lead([victim(outcome="injured")]), TODAY)["reasons"] == ["no_death"]
-    assert assess(lead([]), TODAY)["verdict"] == "needs_review"
+    assert assess(lead([victim(outcome="injured")]))["reasons"] == ["no_death"]
+    assert assess(lead([]))["verdict"] == "needs_review"
 
 
-def test_outside_california_and_old_crash_do_not_qualify():
-    assert "outside_california" in assess(lead([victim()], location=fact("Interstate 35 in Austin, Texas")), TODAY)["reasons"]
-    assert "outside_window" in assess(lead([victim()], date=fact("2026-08-01")), TODAY)["reasons"]
+def test_outside_california_does_not_qualify_but_old_crash_is_not_cut_off():
+    assert "outside_california" in assess(lead([victim()], location=fact("Interstate 35 in Austin, Texas")))["reasons"]
+    assert assess(lead([victim()], date=fact("2026-08-01")))["verdict"] == "qualifies"  # no date cutoff
 
 
 def test_missing_date_needs_review():
-    result = assess(lead([victim()], date=Fact()), TODAY)
+    result = assess(lead([victim()], date=Fact()))
     assert result["verdict"] == "needs_review" and "crash date" in result["missing"]
 
 
@@ -241,7 +229,7 @@ MODESTO = "Police said the driver experienced a medical emergency, although the 
 
 def test_other_party_fault_not_established_is_fault_unidentified():
     result = lead([victim()], other_party_at_fault="unknown", other_party_fault_quote=None)
-    assert assess(result, TODAY)["verdict"] == "fault_unidentified"
+    assert assess(result)["verdict"] == "fault_unidentified"
 
 
 def test_medical_emergency_or_investigation_is_not_proof_of_fault():
@@ -251,7 +239,7 @@ def test_medical_emergency_or_investigation_is_not_proof_of_fault():
     assert result.incident.other_party_at_fault == "unknown"
     assert result.people[0].fault_basis == "circumstances_described"  # nobody was cited or arrested
     assert any("uncertain" in n for n in notes)
-    assert assess(result, TODAY)["verdict"] == "fault_unidentified"
+    assert assess(result)["verdict"] == "fault_unidentified"
 
 
 def test_a_vehicle_crash_is_never_not_a_road_crash():
@@ -260,7 +248,7 @@ def test_a_vehicle_crash_is_never_not_a_road_crash():
     result.assessment.verdict = "does_not_qualify"
     notes = apply_checks(result)
     assert "not_a_road_crash" not in result.assessment.reasons and notes
-    assert assess(result, TODAY)["verdict"] != "does_not_qualify" or "not_a_road_crash" not in assess(result, TODAY)["reasons"]
+    assert assess(result)["verdict"] != "does_not_qualify" or "not_a_road_crash" not in assess(result)["reasons"]
 
 
 def test_a_real_non_crash_death_keeps_its_reason():
@@ -297,4 +285,4 @@ def test_old_records_are_re_decided_without_the_model():
     result = result_from_record(record)
     apply_checks(result)
     assert result.incident.other_party_at_fault == "yes"           # taken from the deceased's fault quote
-    assert assess(result, TODAY)["verdict"] == "qualifies"
+    assert assess(result)["verdict"] == "qualifies"

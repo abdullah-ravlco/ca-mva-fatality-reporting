@@ -10,7 +10,7 @@ the same every time and can be explained:
                                                          (single_vehicle_no_other_party)
     - every deceased person was reported impaired        (deceased_impaired)
     - every deceased person was reported at fault        (deceased_at_fault)
-    - outside California / older than the window         (outside_california, outside_window)
+    - outside California                                 (outside_california)
     - the agent says it is not a road crash              (not_a_road_crash)
   qualifies when none of that applies, at least one deceased person is a possible claimant, and the
     sources show the other party caused the crash
@@ -21,11 +21,8 @@ the same every time and can be explained:
 Fault is whatever the sources report. It is not a legal determination.
 """
 
-import math
-
 from src.core.date_utils import parse_date
 from src.modules.source_collection.location import OUTSIDE_CALIFORNIA, detect_location
-from src.modules.source_collection.sources import LOOKBACK_HOURS
 
 
 def _deceased(result):
@@ -42,7 +39,7 @@ def person_blockers(person):
     return blockers
 
 
-def assess(result, today):
+def assess(result):
     """{"verdict", "reasons", "explanation", "agent_verdict", "per_person"} for one LeadResult."""
     incident = result.incident
     deceased = _deceased(result)
@@ -63,8 +60,6 @@ def assess(result, today):
     crash_date = parse_date(incident.date.value)
     if crash_date is None:
         missing.append("crash date")
-    elif not 0 <= (today - crash_date.date()).days <= math.ceil(LOOKBACK_HOURS / 24):
-        reasons.append("outside_window")  # older than the window (or dated in the future)
     if not place:
         missing.append("crash location")
 

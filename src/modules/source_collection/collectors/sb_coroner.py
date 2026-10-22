@@ -43,7 +43,7 @@ CITY_RE = re.compile(r"\s+in\s+(?P<city>[A-Z][A-Za-z .'\-]+?)\s*$")
 FUTURE_TOLERANCE_DAYS = 2
 
 
-def is_recent_or_near_future(value, now=None, hours=96, tolerance_days=FUTURE_TOLERANCE_DAYS):
+def is_recent_or_near_future(value, since, now=None, tolerance_days=FUTURE_TOLERANCE_DAYS):
     """Like date_utils.is_recent(), but tolerates dates a couple of days into the future.
 
     Local to this collector: the SB Coroner page is the only source that
@@ -65,8 +65,7 @@ def is_recent_or_near_future(value, now=None, hours=96, tolerance_days=FUTURE_TO
     if value > now + timedelta(days=tolerance_days):
         return False
 
-    cutoff = now - timedelta(hours=hours)
-    return value >= cutoff
+    return value >= since.astimezone(timezone.utc)
 
 
 def parse_location(text):
@@ -140,7 +139,7 @@ def traffic_hint(text):
     return None
 
 
-def collect_sb_coroner(source, client, now, hours):
+def collect_sb_coroner(source, client, now, since):
     result = make_source_result(source["name"], source["url"], now, "coroner")
     records = []
 
@@ -164,11 +163,11 @@ def collect_sb_coroner(source, client, now, hours):
         label = f"case {entry['case_number']}"
 
         if incident is not None:
-            if not is_recent_or_near_future(incident, now=now, hours=hours):
+            if not is_recent_or_near_future(incident, since, now=now):
                 skipped["incident_outside_window"] += 1
                 continue
             status = RECENT
-        elif published is not None and is_recent(published, now=now, hours=hours, date_only=True):
+        elif published is not None and is_recent(published, since, now=now, date_only=True):
             # Recent release whose incident date couldn't be read: keep for review.
             status = DATE_UNKNOWN
         else:

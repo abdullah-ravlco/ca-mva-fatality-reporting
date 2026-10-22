@@ -6,6 +6,7 @@ from src.modules.source_collection.finalize import finalize
 from src.modules.source_collection.topic import on_topic
 
 NOW = datetime(2026, 10, 14, 18, 0, tzinfo=timezone.utc)
+SINCE = datetime(2026, 10, 7, 18, 0, tzinfo=timezone.utc)  # the last run
 
 
 def raw(url, title, description=None, published="2026-10-13T10:00:00+00:00"):
@@ -43,7 +44,7 @@ def test_finalize_removes_same_link_off_topic_and_old():
         raw("https://ktla.com/undated", "Driver killed in crash on I-5", published=None),
     ]
 
-    kept, counts = finalize(records, NOW, 168)
+    kept, counts = finalize(records, NOW, SINCE)
 
     assert [r["url"] for r in kept] == ["https://ktla.com/a", "https://ktla.com/undated"]
     assert kept[0]["description"] == "Details"  # the fullest copy is kept
@@ -152,13 +153,13 @@ def test_google_links_are_resolved_and_failures_keep_the_original(tmp_path, monk
 
 
 def test_finalize_keeps_only_stories_inside_the_window():
-    end = datetime(2026, 10, 1, 7, 0, tzinfo=timezone.utc)  # the window ends here and covers 30 days back
+    end = datetime(2026, 10, 1, 7, 0, tzinfo=timezone.utc)  # the window ends here
     records = [
         raw("https://a.com/sept", "Driver killed in crash on I-5", published="2026-09-15T10:00:00+00:00"),
         raw("https://a.com/aug", "Driver killed in crash on I-5", published="2026-08-20T10:00:00+00:00"),
         raw("https://a.com/oct", "Driver killed in crash on I-5", published="2026-10-05T10:00:00+00:00"),
     ]
-    kept, counts = finalize(records, end, 30 * 24)
+    kept, counts = finalize(records, end, datetime(2026, 9, 1, 7, 0, tzinfo=timezone.utc))
     assert [r["url"] for r in kept] == ["https://a.com/sept"]
     assert counts["published_before_window"] == 2  # before the period, or after it
 

@@ -82,7 +82,7 @@ Every item has five fields: `published_date`, `source_name`, `title`, `url`, `de
    named and nothing points to California, or the outlet is out of state and the text has no
    California indicator. A story with no location is kept, and "Utah man ... in Kern River
    Valley" is kept;
-5. stories published before the lookback window (undated ones are kept).
+5. stories published before the window start (undated ones are kept).
 
 Google News links are then resolved to the publisher URL (`resolve_links.py`; about 3 s per
 link, cached in `data/state/google_links.json`, so only the first run is slow). A link that
@@ -90,7 +90,13 @@ cannot be resolved stays as collected, and links that become equal are merged.
 
 `data/history/run_history.json` lists every run with statistics only (raw items, how many were
 dropped for each reason, finalized, Google links resolved). The same entry is saved in
-`data/runs/<run_id>/source_collection/`. Incremental loading is not implemented yet.
+`data/runs/<run_id>/source_collection/`. 
+
+**Collection window.** There is no fixed lookback. A run collects from the start of the previous
+run (the latest entry in `run_history.json` that collected anything) up to now, and writes that
+start as `window_start` in `finalized_raw.json`, which `link_extraction` reads. The first run has
+no history, so give it a start: `python -m src.main --since 2026-10-01`. `--since` also overrides
+the history on any later run. Lead verification applies no date cutoff.
 
 ### What each stage decides
 
@@ -98,7 +104,7 @@ dropped for each reason, finalized, Google links resolved). The same entry is sa
   canonical URL, or a near-identical headline from the same publisher. Every query and feed
   that found an article is kept in `discovered_by_queries` / `discovered_by_sources`.
 - **Full-text filter** (stage 2) drops articles whose text puts the crash outside the
-  lookback window or outside California, says it happened earlier, or does not describe a
+  collection window or outside California, says it happened earlier, or does not describe a
   fatal road crash. Undetermined articles are kept. Articles that could not be fetched keep
   their RSS data and stay in the output.
 - **Incident grouping** (stage 3) is deterministic. Records join one incident only when
