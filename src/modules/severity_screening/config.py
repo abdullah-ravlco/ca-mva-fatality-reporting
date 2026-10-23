@@ -36,7 +36,10 @@ JEV_MIN_CONFIDENCE = float((os.getenv("JEV_MIN_CONFIDENCE") or "0.6").strip())
 JEV_MAX_INPUT_CHARS = _int("JEV_MAX_INPUT_CHARS", 0)   # 0 = send the full text of every article
 
 # Statuses that move on to lead_verification.
-PASS_ON_STATUSES = ("qualified", "victim_identity_unidentified", "fault_unidentified")
+# victim_identity_unidentified is not passed on: nobody to look up or contact yet, so it only goes to the CSV below.
+PASS_ON_STATUSES = ("qualified", "fault_unidentified")
+UNIDENTIFIED_STATUS = "victim_identity_unidentified"
+UNIDENTIFIED_CSV_NAME = "unidentified_victims.csv"
 # Fault and other-party answers qualify at a lower confidence; a "no other party" must be this sure to drop a case.
 JEV_MIN_CONFIDENCE_FAULT = float((os.getenv("JEV_MIN_CONFIDENCE_FAULT") or "0.5").strip())
 JEV_MIN_CONFIDENCE_NO_OTHER_PARTY = float((os.getenv("JEV_MIN_CONFIDENCE_NO_OTHER_PARTY") or "0.8").strip())

@@ -7,10 +7,12 @@ Output: data/severity_screening/screened_incidents.json - every incident with it
         data/severity_screening/passed_leads.json       - only the incidents that passed, each with its
           screening result and the full content of its articles: the input of lead_verification
         data/severity_screening/screening_errors.json   - every failed JEV call, with the details
+        data/severity_screening/unidentified_victims.csv - the incidents whose victim is not named: not
+          passed on (nothing to look up yet), listed here for a person to follow up
 
-Statuses: qualified, victim_identity_unidentified, fault_unidentified (passed on to
-lead_verification), dropped (with drop_reason: codes and text; not passed on), screening_failed
-(JEV call failed; retried next run).
+Statuses: qualified, fault_unidentified (passed on to lead_verification),
+victim_identity_unidentified (CSV only, not passed on), dropped (with drop_reason: codes and text;
+not passed on), screening_failed (JEV call failed; retried next run).
 JEV answers classification questions (questions.py); the status is decided in decision.py from them.
 
 Results are saved after every incident. An incident whose articles and prompt version have not
@@ -23,7 +25,7 @@ from collections import Counter
 from datetime import datetime, timezone
 
 from src.core.logger import configure_logging
-from src.core.outputs import read_json, write_stage_json
+from src.core.outputs import read_json, write_stage_csv, write_stage_json
 from src.modules.lead_verification.quotes import quote_in_text
 from src.modules.severity_screening import config
 from src.modules.severity_screening.decision import decide
@@ -143,8 +145,34 @@ def passed_lead(record, incident):
     }
 
 
+UNIDENTIFIED_COLUMNS = ["#", "Crash Date", "Crash Location", "Age", "Articles", "Reason", "Headlines", "Links", "Incident ID"]
+
+
+def unidentified_rows(records, incidents_by_id):
+    """One row per incident whose victim is not named (status victim_identity_unidentified)."""
+    rows = []
+    for record in (r for r in records if r["status"] == config.UNIDENTIFIED_STATUS):
+        articles = (incidents_by_id.get(record["incident_id"]) or {}).get("articles") or []
+        facts = record.get("facts") or {}
+        victims = facts.get("victims") or [{}]
+        rows.append({
+            "#": len(rows) + 1,
+            "Crash Date": facts.get("crash_date"),
+            "Crash Location": facts.get("crash_location"),
+            "Age": victims[0].get("age"),
+            "Articles": len(articles),
+            "Reason": "; ".join(record.get("reasons") or []),
+            "Headlines": " | ".join(a["title"] for a in articles if a.get("title")),
+            "Links": " | ".join(a["url"] for a in articles if a.get("url")),
+            "Incident ID": record["incident_id"],
+        })
+    return rows
+
+
 def save(records, errors, incidents_by_id):
     write_stage_json(config.MODULE, config.ERRORS_NAME, errors)
+    write_stage_csv(config.MODULE, config.UNIDENTIFIED_CSV_NAME, UNIDENTIFIED_COLUMNS,
+                    unidentified_rows(records, incidents_by_id))
     leads = [
         passed_lead(record, incidents_by_id[record["incident_id"]])
         for record in records
