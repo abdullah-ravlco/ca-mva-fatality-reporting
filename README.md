@@ -79,9 +79,9 @@ Tests against a real Postgres run when `TEST_DATABASE_URL` is set (see `tests/te
 | 1 | `source_collection` | publisher RSS feeds, Google News RSS searches (statewide + ~50 California areas) and Tavily news search | `all_raw.json` (every item, unfiltered), `finalized_raw.json` (same-link duplicates, off-topic and old stories removed), `run_history.json` |
 | 2 | `link_extraction` | `finalized_raw.json` (every item is opened) | `articles.json` (one record per article: fetch status, text, page metadata, full-text filter decision), `extraction_errors.json` |
 | 3 | `incident_grouping` | `articles.json` (kept articles) | `incidents.json` (articles grouped per crash, candidate dates/locations, conflicts, uncertainties, grouping rationale) |
-| 4 | `severity_screening` | `incidents.json` | `screened_incidents.json` (per incident: status, tags, reasons, facts mapped from JEV's answers, JEV's raw answers under `jev.answers`), `passed_leads.json` (only the passed leads, with screening result and full article content), `screening_errors.json` (every failed JEV call) |
+| 4 | `severity_screening` | `incidents.json` | `screened_incidents.json` (per incident: status, tags, reasons, facts mapped from JEV's answers, JEV's raw answers under `jev.answers`), `passed_leads.json` (only the passed leads, with screening result and full article content), `screening_errors.json` (every failed JEV call), `unidentified_victims.csv` (incidents whose victim is not named, not passed on) |
 | 5 | `lead_verification` | `passed_leads.json` (only the leads that passed screening, with their full article content) | `verified_leads.json` (per incident: qualification verdict and reasons, incident facts, every person with name/age/residence/fault/impairment, quotes with `quote_verified`, agent log), `fetch_cache.json` |
-| 6 | `contact_enrichment` | `verified_leads.json` (verdict `qualifies`) | `contacts.json` and `contacts.csv` (the team's mailer layout, one row per deceased person: name, death date, aliases, address, phones, age, locations, accident notes; then match status and up to 2 next of kin, closest first: spouse, children, parents, siblings, others) (per deceased person: match status, date of birth, last address, phones, relatives with relationship, address, phones), `contacts_details.json` (candidates, match reasons, lookups), `searchbug_errors.json` |
+| 6 | `contact_enrichment` | `verified_leads.json` (verdict `qualifies`) | `contacts.json` and `contacts.csv` (the team's mailer layout, one row per deceased person: name, death date, aliases, address, phones, age, locations, accident notes; then match status and up to 2 next of kin, closest first: spouse, children, parents, siblings, others) (per deceased person: match status, date of birth, last address, phones, relatives with relationship, address, phones), `contacts_details.json` (candidates, match reasons, lookups), `searchbug_errors.json`, `unnamed_people.csv` (deceased people with no reported name: not looked up, left out of `contacts.csv`) |
 
 Every run is also kept in `data/runs/<run_id>/<stage>/`.
 
@@ -142,7 +142,9 @@ first run), it starts `FIRST_RUN_LOOKBACK_DAYS` (7) days back; change that numbe
   `conflicting_reports`, `crash_details_missing`, `age_missing`, `name_and_fault_unknown`,
   `no_victim_reported`). Each victim is judged separately; the incident takes the best result.
   A death is always catastrophic; "critical condition" / "life-threatening" count as catastrophic.
-  Only non-dropped incidents go to lead verification. Every JEV failure is logged with its HTTP
+  Only `qualified` and `fault_unidentified` incidents go to lead verification; incidents whose victim is
+  not named (`victim_identity_unidentified`) are listed in `unidentified_victims.csv` instead and are not
+  sent on. Every JEV failure is logged with its HTTP
   status, response excerpt, request id, attempts and a hint; 429/5xx/timeouts are retried. Failed
   incidents are `screening_failed` and retried next run.
 - **Lead verification** (stage 5) is an agent (`agent.py`). The model gets the full text of an

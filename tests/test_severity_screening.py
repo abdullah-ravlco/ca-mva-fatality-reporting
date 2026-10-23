@@ -1,3 +1,4 @@
+import csv
 import json
 from types import SimpleNamespace
 
@@ -363,3 +364,15 @@ def test_fault_claims_need_a_quote_that_shows_them():
     assert shown["status"] == "qualified" and shown["corrections"] == []
     # an unquoted claim against the victim does not drop the case either
     assert decide(facts([victim(role="driver", at_fault_party="this_victim", fault_quote=None)]))["status"] != "dropped"
+
+
+def test_unnamed_victims_are_not_passed_on_and_go_to_their_own_csv(sandbox):
+    class Unnamed(FakeJev):
+        def ask(self, state, questions):
+            return answers(victim_named={"type": "noul", "noul": 0.1}), {}
+
+    assert screening.main(Unnamed()) is True
+    folder = sandbox / "severity_screening"
+    assert json.loads((folder / "passed_leads.json").read_text())["leads"] == []
+    rows = list(csv.DictReader((folder / "unidentified_victims.csv").open(encoding="utf-8-sig")))
+    assert rows and all(r["Incident ID"] and r["#"] for r in rows)

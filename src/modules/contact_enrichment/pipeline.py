@@ -27,6 +27,7 @@ SEARCHBUG_MAX_LOOKUPS_PER_RUN paid lookups are made per run. Results are saved a
 import hashlib
 import json
 import logging
+import re
 from collections import Counter
 from datetime import datetime, timezone
 
@@ -90,6 +91,17 @@ class Lookups:
 def split_name(name):
     parts = (name or "").split()
     return (parts[0], parts[-1]) if len(parts) >= 2 else (None, None)
+
+
+# A name that says there is no name: "Not yet identified", "Unidentified woman", "(named in articles)".
+PLACEHOLDER_NAME_RE = re.compile(
+    r"\b(unidentified|identified|unknown|unnamed|undisclosed|withheld|released|reported|available|"
+    r"anonymous|victim|pedestrian)\b|^\(|\bno name\b|\bn/a\b", re.IGNORECASE)
+
+
+def is_named(name):
+    """True when name is a real first and last name, not empty or a placeholder."""
+    return bool(split_name(name)[0]) and not PLACEHOLDER_NAME_RE.search(name)
 
 
 def city_of(text):
@@ -240,7 +252,7 @@ def enrich(lookups, target, texts):
     """(short_entry, detail_entry) for one deceased person."""
     base = {key: target.get(key) for key in ("incident_id", "name", "age", "crash_date", "residence",
                                              "crash_location", "role", "at_fault", "fault_explanation")}
-    if not target["name"] or not split_name(target["name"])[0]:
+    if not is_named(target["name"]):
         return dict(base, match=NO_NAME, deceased=None, relatives=[]), dict(base, match=NO_NAME)
 
     status, chosen, candidates, made = find_deceased(lookups, target)
@@ -288,6 +300,9 @@ EXTRA_COLUMNS = ["Match Status", "Incident ID", "DOB", "Relatives on Record"] + 
     f"Next of Kin {i} {field}" for i in range(1, config.MAX_RELATIVES + 1) for field in NEXT_OF_KIN_FIELDS
 ]
 CSV_COLUMNS = MAILER_COLUMNS + EXTRA_COLUMNS
+# People with no reported name: what is known about the crash, nothing to mail yet.
+UNNAMED_COLUMNS = ["#", "Death Date", "Age", "Age Range", "Residence", "Incident Location",
+                   "Notes on accident and/or mailer recipient", "Match Status", "Incident ID"]
 CELL_SEPARATOR = " | "  # between several values in one cell
 NAME_SUFFIXES = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "v"}
 ROLE_WORDS = {"driver": "driver", "passenger": "passenger", "pedestrian": "pedestrian", "cyclist": "cyclist",
@@ -325,7 +340,9 @@ def accident_notes(entry):
     explanation = (entry.get("fault_explanation") or "").strip().rstrip(".")
     notes = f"Manner: Accident (MVA). Role: {ROLE_WORDS.get(entry.get('role'), 'unknown')}. {fault}"
     notes += f" ({explanation}.)." if explanation else "."
-    if entry.get("match") == POSSIBLE:
+    if entry.get("match") == NO_NAME:
+        notes += " Name not reported; not looked up."
+    elif entry.get("match") == POSSIBLE:
         notes += " Identity not confirmed: SearchBug record matches name and age only; check before mailing."
     elif entry.get("match") == AMBIGUOUS:
         notes += " Several SearchBug records match; choose the right one before mailing."
@@ -378,7 +395,10 @@ def csv_rows(entries):
 
 def save(entries, details, errors):
     write_stage_json(config.MODULE, config.ERRORS_NAME, errors)
-    write_stage_csv(config.MODULE, config.CSV_NAME, CSV_COLUMNS, csv_rows(entries))
+    named = [e for e in entries if e.get("match") != NO_NAME]
+    unnamed = [e for e in entries if e.get("match") == NO_NAME]
+    write_stage_csv(config.MODULE, config.CSV_NAME, CSV_COLUMNS, csv_rows(named))
+    write_stage_csv(config.MODULE, config.UNNAMED_CSV_NAME, UNNAMED_COLUMNS, csv_rows(unnamed))
     write_stage_json(config.MODULE, config.DETAILS_NAME, {"run_at": now(), "people": details})
     return write_stage_json(config.MODULE, config.OUTPUT_NAME, {
         "run_at": now(),

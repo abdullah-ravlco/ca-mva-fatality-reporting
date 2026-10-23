@@ -7,7 +7,7 @@ Runs the pipeline stages in order:
                           re-check crash date / location / relevance on the full text
   3. incident_grouping  - group the kept articles into incidents (no LLM)
   4. severity_screening - JEV reads each incident; only catastrophic injuries caused by another
-                          party go on (qualified / identity or fault unidentified / needs review)
+                          party go on (qualified / fault unidentified); unnamed victims go to a CSV
   5. lead_verification  - an agent investigates each incident that passed screening
   6. contact_enrichment - SearchBug: the deceased person's date of birth, address and phones, and
                           their relatives' names, relationships, addresses and phones
