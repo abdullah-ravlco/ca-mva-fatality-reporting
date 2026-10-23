@@ -19,7 +19,7 @@ never run on stale input.
 Usage:
   python -m src.main                 # run every stage, in order
   python -m src.main --stage STAGE   # run one stage (repeatable)
-  python -m src.main --since DATE    # first run only: where collection starts (e.g. 2026-10-01)
+  python -m src.main --since DATE    # override where collection starts (e.g. 2026-10-01)
 
 Collection covers the time from the start of the last run up to now; there is no fixed lookback.
 """
@@ -65,8 +65,8 @@ def parse_args():
     )
     parser.add_argument(
         "--since",
-        help="Where source collection starts (a date, e.g. 2026-10-01). Needed on the first run; "
-             "later runs start where the last one did.",
+        help="Where source collection starts (a date, e.g. 2026-10-01). Default: where the last run started; "
+             "with no earlier run, FIRST_RUN_LOOKBACK_DAYS ago (config/settings.py).",
     )
     return parser.parse_args()
 
