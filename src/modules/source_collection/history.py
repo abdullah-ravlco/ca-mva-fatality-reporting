@@ -5,8 +5,10 @@ Written two ways:
   data/runs/<run_id>/source_collection/run_history.json - this run only
 """
 
-from config.settings import DATA_DIR
-from src.core.date_utils import parse_date
+from datetime import timedelta
+
+from config.settings import DATA_DIR, FIRST_RUN_LOOKBACK_DAYS
+from src.core.date_utils import parse_date, utc_now
 from src.core.outputs import read_json, run_id, write_json_atomic, write_stage_json
 
 
@@ -53,7 +55,7 @@ def last_run_start():
 def window_start(since=None):
     """Where this run's collection window starts: `since` when given, else the last run's start.
 
-    The first run has no earlier run, so it needs `since` (e.g. --since 2026-10-01)."""
+    With no earlier run (the first run), it starts FIRST_RUN_LOOKBACK_DAYS ago (config/settings.py)."""
     if since:
         start = parse_date(since)
         if start is None:
@@ -61,8 +63,5 @@ def window_start(since=None):
         return start
     start = last_run_start()
     if start is None:
-        raise ValueError(
-            "No earlier source_collection run found in " + str(HISTORY_FILE) + ", so there is no window start. "
-            "For the first run, pass one: python -m src.main --since 2026-10-01"
-        )
+        return utc_now() - timedelta(days=FIRST_RUN_LOOKBACK_DAYS)
     return start

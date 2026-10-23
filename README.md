@@ -111,9 +111,9 @@ dropped for each reason, finalized, Google links resolved). The same entry is sa
 
 **Collection window.** There is no fixed lookback. A run collects from the start of the previous
 run (the latest entry in `run_history.json` that collected anything) up to now, and writes that
-start as `window_start` in `finalized_raw.json`, which `link_extraction` reads. The first run has
-no history, so give it a start: `python -m src.main --since 2026-10-01`. `--since` also overrides
-the history on any later run. Lead verification applies no date cutoff.
+start as `window_start` in `finalized_raw.json`, which `link_extraction` reads. With no history (the
+first run), it starts `FIRST_RUN_LOOKBACK_DAYS` (7) days back; change that number in
+`config/settings.py`. `python -m src.main --since 2026-10-01` overrides either start. Lead verification applies no date cutoff.
 
 ### What each stage decides
 

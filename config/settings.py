@@ -18,6 +18,9 @@ load_dotenv(PROJECT_ROOT / ".env")
 DATA_DIR = PROJECT_ROOT / "data"
 LOGS_DIR = PROJECT_ROOT / "logs"
 
+# How far back the first run collects, when there is no earlier run and no --since.
+FIRST_RUN_LOOKBACK_DAYS = 7
+
 
 def module_data_dir(module_name):
     """data/<module_name>."""

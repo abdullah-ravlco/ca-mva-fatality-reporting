@@ -1,8 +1,9 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from config.settings import FIRST_RUN_LOOKBACK_DAYS
 from src.modules.source_collection import history
 from src.modules.source_collection.sources import google_news_feeds
 
@@ -28,9 +29,10 @@ def test_window_starts_at_the_last_run_that_collected_something(run_history):
     assert history.window_start() == datetime(2026, 10, 8, 8, 0, tzinfo=timezone.utc)
 
 
-def test_first_run_needs_a_start_date(run_history):
-    with pytest.raises(ValueError, match="--since"):
-        history.window_start()
+def test_first_run_looks_back_the_configured_number_of_days(run_history):
+    before = datetime.now(timezone.utc)
+    start = history.window_start()
+    assert before - timedelta(days=FIRST_RUN_LOOKBACK_DAYS, seconds=5) <= start <= before - timedelta(days=FIRST_RUN_LOOKBACK_DAYS) + timedelta(seconds=5)
 
 
 def test_since_overrides_the_history_and_must_be_a_date(run_history):
