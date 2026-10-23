@@ -10,3 +10,6 @@ data/**
 
 logs/
 .dagster_home/
+
+# Claude Code project settings (local only)
+.claude/
