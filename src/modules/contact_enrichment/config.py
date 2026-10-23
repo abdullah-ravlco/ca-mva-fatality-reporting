@@ -9,6 +9,7 @@ LEADS_FILE = module_data_dir("lead_verification") / "verified_leads.json"
 PASSED_LEADS_FILE = module_data_dir("severity_screening") / "passed_leads.json"   # article text, for relationships
 OUTPUT_NAME = "contacts.json"
 CSV_NAME = "contacts.csv"            # the same, one row per relative, for spreadsheets
+UNNAMED_CSV_NAME = "unnamed_people.csv"   # deceased people whose name is not reported: nothing to look up
 DETAILS_NAME = "contacts_details.json"
 ERRORS_NAME = "searchbug_errors.json"
 OUTPUT_FILE = module_data_dir(MODULE) / OUTPUT_NAME

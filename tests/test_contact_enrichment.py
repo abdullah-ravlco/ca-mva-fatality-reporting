@@ -353,3 +353,29 @@ def test_mailer_helpers():
                             "fault_explanation": "No public source assigns fault; the rollover cause remained under investigation."})
     assert notes == ("Manner: Accident (MVA). Role: passenger. Not at fault (No public source assigns fault; "
                      "the rollover cause remained under investigation.).")
+
+
+@pytest.mark.parametrize("name", [None, "", "Maria", "Not yet identified", "Unidentified woman", "unknown",
+                                  "(named in articles)", "Name not released"])
+def test_a_missing_or_placeholder_name_is_not_a_name(name):
+    assert not ce.is_named(name)
+
+
+@pytest.mark.parametrize("name", ["Maria Lopez", "Sam Doe", "Mary Ann O'Neil", "Juan Carlos de la Cruz Jr."])
+def test_real_names_are_names(name):
+    assert ce.is_named(name)
+
+
+def test_unnamed_people_are_not_looked_up_and_go_to_their_own_csv(sandbox):
+    entry, _ = ce.enrich(FakeSearchBug(), dict(TARGET, name="Not yet identified"), [])
+    assert entry["match"] == "no_name" and entry["relatives"] == []
+
+    fake = FakeSearchBug()
+    ce.save([ce.enrich(fake, TARGET, [])[0], entry], [], [])
+    assert fake.calls                                                    # Maria was searched, the unnamed one was not
+    folder = sandbox / "contact_enrichment"
+    named = list(csv.DictReader((folder / "contacts.csv").open(encoding="utf-8-sig")))
+    unnamed = list(csv.DictReader((folder / "unnamed_people.csv").open(encoding="utf-8-sig")))
+    assert [r["First Name"] for r in named] == ["Maria"]
+    assert [r["#"] for r in unnamed] == ["1"] and unnamed[0]["Match Status"] == "no_name"
+    assert "Name not reported" in unnamed[0]["Notes on accident and/or mailer recipient"]
