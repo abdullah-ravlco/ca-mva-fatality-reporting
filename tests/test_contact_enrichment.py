@@ -379,3 +379,77 @@ def test_unnamed_people_are_not_looked_up_and_go_to_their_own_csv(sandbox):
     assert [r["First Name"] for r in named] == ["Maria"]
     assert [r["#"] for r in unnamed] == ["1"] and unnamed[0]["Match Status"] == "no_name"
     assert "Name not reported" in unnamed[0]["Notes on accident and/or mailer recipient"]
+
+
+# ------------------------------------------------------------------ Google Sheet
+
+class FakeResponse:
+    def __init__(self, body=None, status=200, text=""):
+        self.body, self.status_code, self.text = body, status, text
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"{self.status_code}")
+
+    def json(self):
+        if self.body is None:
+            raise ValueError("not json")
+        return self.body
+
+
+@pytest.fixture
+def script(monkeypatch):
+    from src.modules.contact_enrichment import sheets
+    monkeypatch.setattr(ce_config, "GOOGLE_SCRIPT_URL", "https://script.google.com/macros/s/x/exec")
+    monkeypatch.setattr(ce_config, "GOOGLE_SCRIPT_TOKEN", "secret")
+    sent = []
+
+    def use(response):
+        monkeypatch.setattr(sheets.requests, "post", lambda url, json, timeout: sent.append((url, json)) or response)
+        return sent
+    return use
+
+
+def test_new_rows_are_posted_in_column_order_with_the_token(script):
+    from src.modules.contact_enrichment import sheets
+    sent = script(FakeResponse({"status": "success", "added": 1, "skipped": 1}))
+    answer = sheets.publish("Leads", ["A", "B"], [{"A": "x", "B": None}, {"A": 5, "B": "(559) 555-0101"}])
+    assert answer["added"] == 1
+    url, body = sent[0]
+    assert url.endswith("/exec") and body["token"] == "secret" and body["tab"] == "Leads"
+    assert body["columns"] == ["A", "B"] and body["rows"] == [["x", ""], ["5", "(559) 555-0101"]]
+
+
+@pytest.mark.parametrize("response, message", [
+    (FakeResponse({"status": "error", "message": "bad token"}), "bad token"),
+    (FakeResponse(None, text="<html>Sign in</html>"), "JSON"),
+    (FakeResponse(None, status=500), "500"),
+])
+def test_a_refused_or_broken_answer_raises(script, response, message):
+    from src.modules.contact_enrichment import sheets
+    script(response)
+    with pytest.raises(Exception, match=message):
+        sheets.publish("Leads", ["A"], [])
+
+
+def test_sheet_needs_url_and_token(monkeypatch):
+    from src.modules.contact_enrichment import sheets
+    monkeypatch.setattr(ce_config, "GOOGLE_SCRIPT_URL", "https://x/exec")
+    monkeypatch.setattr(ce_config, "GOOGLE_SCRIPT_TOKEN", "")
+    assert not sheets.enabled()
+    monkeypatch.setattr(ce_config, "GOOGLE_SCRIPT_TOKEN", "secret")
+    assert sheets.enabled()
+
+
+def test_stage_sends_named_people_and_a_sheet_failure_never_stops_it(sandbox, monkeypatch):
+    from src.modules.contact_enrichment import sheets
+    sent = []
+    monkeypatch.setattr(sheets, "enabled", lambda: True)
+    monkeypatch.setattr(sheets, "publish", lambda tab, columns, rows: sent.append((tab, [r["First Name"] for r in rows])) or {})
+    assert ce.main(FakeSearchBug()) is True
+    assert sent == [(ce_config.GOOGLE_SHEET_TAB, ["Maria", "Sam"])]
+
+    def broken(*args):
+        raise RuntimeError("quota exceeded")
+    monkeypatch.setattr(sheets, "publish", broken)
+    assert ce.main(FakeSearchBug()) is True

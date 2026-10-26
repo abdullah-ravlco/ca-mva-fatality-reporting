@@ -38,6 +38,11 @@ MAX_RELATIVES = _int("SEARCHBUG_MAX_RELATIVES", 2)
 MAX_PHONES = _int("SEARCHBUG_MAX_PHONES", 2)
 REFERENCE = "ca-mva-fatality-reporting"
 
+# Google Sheet that receives new contacts through an Apps Script web app (see sheets.py). URL and token are needed.
+GOOGLE_SCRIPT_URL = (os.getenv("GOOGLE_SCRIPT_URL") or "").strip()
+GOOGLE_SCRIPT_TOKEN = (os.getenv("GOOGLE_SCRIPT_TOKEN") or "").strip()
+GOOGLE_SHEET_TAB = (os.getenv("GOOGLE_SHEET_TAB") or "").strip()   # an existing tab; empty = the first tab
+
 # Which lead_verification verdicts are looked up.
 VERDICTS_TO_ENRICH = ("qualifies", "fault_unidentified")
 

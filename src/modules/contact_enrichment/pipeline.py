@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 
 from src.core.logger import configure_logging
 from src.core.outputs import read_json, write_json_atomic, write_stage_csv, write_stage_json
-from src.modules.contact_enrichment import config
+from src.modules.contact_enrichment import config, sheets
 from src.modules.contact_enrichment.client import SearchBugClient, SearchBugError
 from src.modules.contact_enrichment.match import (
     AMBIGUOUS, MATCHED, NOT_FOUND, POSSIBLE, choose, closeness, relationship_from_articles,
@@ -393,6 +393,21 @@ def csv_rows(entries):
     return rows
 
 
+def publish_to_sheet(entries):
+    """Append the contacts that are not in the Google Sheet yet (when one is configured).
+    A sheet problem is logged and never stops the run: the CSV is complete."""
+    if not sheets.enabled():
+        return
+    named = [e for e in entries if e.get("match") != NO_NAME]
+    try:
+        answer = sheets.publish(config.GOOGLE_SHEET_TAB, CSV_COLUMNS, csv_rows(named))
+        logger.info("Google Sheet: tab %s, %s new rows added, %s already there", config.GOOGLE_SHEET_TAB,
+                    answer.get("added"), answer.get("skipped"))
+    except Exception as error:
+        logger.error("Google Sheet: could not save contacts: %s: %s. contacts.csv is complete; "
+                     "import it by hand.", type(error).__name__, error)
+
+
 def save(entries, details, errors):
     write_stage_json(config.MODULE, config.ERRORS_NAME, errors)
     named = [e for e in entries if e.get("match") != NO_NAME]
@@ -423,6 +438,7 @@ def main(client=None):
     logger.info("Deceased people in qualified leads: %s", len(people))
     if not people:
         save([], [], [])
+        publish_to_sheet([])
         return True
 
     try:
@@ -452,6 +468,7 @@ def main(client=None):
 
     logger.info("Contact enrichment done: %s (paid lookups this run: %s)",
                 dict(Counter(e["match"] for e in entries)), lookups.paid)
+    publish_to_sheet(entries)
     if errors and len(errors) == len(people):
         logger.error("Every SearchBug lookup failed; details in %s", config.ERRORS_NAME)
         return False

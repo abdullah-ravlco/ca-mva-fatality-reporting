@@ -83,6 +83,8 @@ Tests against a real Postgres run when `TEST_DATABASE_URL` is set (see `tests/te
 | 5 | `lead_verification` | `passed_leads.json` (only the leads that passed screening, with their full article content) | `verified_leads.json` (per incident: qualification verdict and reasons, incident facts, every person with name/age/residence/fault/impairment, quotes with `quote_verified`, agent log), `fetch_cache.json` |
 | 6 | `contact_enrichment` | `verified_leads.json` (verdict `qualifies`) | `contacts.json` and `contacts.csv` (the team's mailer layout, one row per deceased person: name, death date, aliases, address, phones, age, locations, accident notes; then match status and up to 2 next of kin, closest first: spouse, children, parents, siblings, others) (per deceased person: match status, date of birth, last address, phones, relatives with relationship, address, phones), `contacts_details.json` (candidates, match reasons, lookups), `searchbug_errors.json`, `unnamed_people.csv` (deceased people with no reported name: not looked up, left out of `contacts.csv`) |
 
+**Google Sheet (optional).** With `GOOGLE_SCRIPT_URL` and `GOOGLE_SCRIPT_TOKEN` set in `.env`, `contact_enrichment` also sends `contacts.csv` to a Google Sheet through an Apps Script web app (`apps_script.gs`; its header explains the setup). Only people whose Incident ID is not in the tab yet are appended to an existing tab (`GOOGLE_SHEET_TAB`, default the first tab; the script never creates a tab), so a rerun never duplicates. A sheet problem is logged and never stops the run (`sheets.py`).
+
 Every run is also kept in `data/runs/<run_id>/<stage>/`.
 
 ### source_collection: raw items and finalizing
