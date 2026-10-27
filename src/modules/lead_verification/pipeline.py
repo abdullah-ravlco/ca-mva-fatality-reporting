@@ -116,6 +116,7 @@ def compact(record):
         "crash_location": _value(incident.get("location")),
         "other_party": incident.get("other_party_description"),
         "other_party_at_fault": incident.get("other_party_at_fault"),
+        "other_party_fault_source_url": incident.get("other_party_fault_source_url"),
         "deceased": [
             {
                 "name": _value(p.get("name")),
@@ -125,6 +126,7 @@ def compact(record):
                 "at_fault": p.get("at_fault"),
                 "fault_basis": p.get("fault_basis"),
                 "fault_explanation": p.get("fault_explanation"),
+                "fault_source_url": p.get("fault_source_url"),
                 "impaired": p.get("impaired"),
             }
             for p in deceased

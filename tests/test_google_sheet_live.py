@@ -1,7 +1,7 @@
 """Live check of the Google Sheet export: talks to your deployed Apps Script web app.
 
 Skipped unless GOOGLE_SCRIPT_URL and GOOGLE_SCRIPT_TOKEN are set in .env. It writes only fake people
-(Case Ids "inc-test-...") to a tab named PipelineTest. The script never creates a tab, so add an empty tab
+(last name "Test-...") to a tab named PipelineTest. The script never creates a tab, so add an empty tab
 with that name to the spreadsheet first, and delete it afterwards.
 
   .venv/bin/python -m pytest tests/test_google_sheet_live.py -v -s
@@ -19,14 +19,14 @@ pytestmark = pytest.mark.skipif(
 )
 
 TAB = "PipelineTest"
-COLUMNS = ["First Name", "Last Name", "Phone1", "Case Id"]
+COLUMNS = ["First Name", "Last Name", "Crash Date", "Phone1"]
 
 
 def fake_people():
     run = uuid.uuid4().hex[:8]  # new ids every run, so the test can be repeated
     return [
-        {"First Name": "Test", "Last Name": "One", "Phone1": "5595550101 (Mobile)", "Case Id": f"inc-test-{run}-1"},
-        {"First Name": "Test", "Last Name": "Two", "Phone1": "5595550102 (Mobile)", "Case Id": f"inc-test-{run}-2"},
+        {"First Name": "Test", "Last Name": f"One-{run}", "Crash Date": "2026-01-01", "Phone1": "5595550101 (Mobile)"},
+        {"First Name": "Test", "Last Name": f"Two-{run}", "Crash Date": "2026-01-01", "Phone1": "5595550102 (Mobile)"},
     ]
 
 

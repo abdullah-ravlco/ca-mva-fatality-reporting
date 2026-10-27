@@ -86,9 +86,9 @@ Tests against a real Postgres run when `TEST_DATABASE_URL` is set (see `tests/te
 | 3 | `incident_grouping` | `articles.json` (kept articles) | `incidents.json` (articles grouped per crash, candidate dates/locations, conflicts, uncertainties, grouping rationale) |
 | 4 | `severity_screening` | `incidents.json` | `screened_incidents.json` (per incident: status, tags, reasons, facts mapped from JEV's answers, JEV's raw answers under `jev.answers`), `passed_leads.json` (only the passed leads, with screening result and full article content), `screening_errors.json` (every failed JEV call), `unidentified_victims.csv` (incidents whose victim is not named, not passed on) |
 | 5 | `lead_verification` | `passed_leads.json` (only the leads that passed screening, with their full article content) | `verified_leads.json` (per incident: qualification verdict and reasons, incident facts, every person with name/age/residence/fault/impairment, quotes with `quote_verified`, agent log), `fetch_cache.json` |
-| 6 | `contact_enrichment` | `verified_leads.json` (verdict `qualifies`) | `contacts.json` and `contacts.csv` (one row per deceased person: case id, name, crash date, address, 2 phones, age, incident location, match status; then up to 2 next of kin, closest first: name, relationship, address, phones) (per deceased person: match status, date of birth, last address, phones, relatives with relationship, address, phones), `contacts_details.json` (candidates, match reasons, lookups), `searchbug_errors.json`, `unnamed_people.csv` (deceased people with no reported name: not looked up, left out of `contacts.csv`) |
+| 6 | `contact_enrichment` | `verified_leads.json` (verdict `qualifies`) | `contacts.json` and `contacts.csv` (one row per deceased person: name, crash date, incident location, match status, at fault, proof (link to the article that shows the fault finding), age, address, 2 phones; then up to 2 next of kin, closest first: name, relationship, address, phones) (per deceased person: match status, date of birth, last address, phones, relatives with relationship, address, phones), `contacts_details.json` (candidates, match reasons, lookups), `searchbug_errors.json`, `unnamed_people.csv` (deceased people with no reported name: not looked up, left out of `contacts.csv`) |
 
-**Google Sheet (optional).** With `GOOGLE_SCRIPT_URL` and `GOOGLE_SCRIPT_TOKEN` set in `.env`, `contact_enrichment` also sends `contacts.csv` to a Google Sheet through an Apps Script web app (`apps_script.gs`; its header explains the setup). Only people whose Case Id is not in the tab yet are appended to an existing tab (`GOOGLE_SHEET_TAB`, default the first tab; the script never creates a tab), so a rerun never duplicates. A sheet problem is logged and never stops the run (`sheets.py`).
+**Google Sheet (optional).** With `GOOGLE_SCRIPT_URL` and `GOOGLE_SCRIPT_TOKEN` set in `.env`, `contact_enrichment` also sends `contacts.csv` to a Google Sheet through an Apps Script web app (`apps_script.gs`; its header explains the setup). Only people whose first name, last name and crash date are not in the tab yet are appended to an existing tab (`GOOGLE_SHEET_TAB`, default the first tab; the script never creates a tab), so a rerun never duplicates. A sheet problem is logged and never stops the run (`sheets.py`).
 
 Every run is also kept in `data/runs/<run_id>/<stage>/`.
 
@@ -107,7 +107,7 @@ looked up again.
 | `lead_verification` | `verified_leads.json` | incidents whose articles did not change (fingerprint) |
 | `contact_enrichment` | `contacts.json`, `contacts.csv`, `contacts_details.json` | people already looked up (same name, age, crash date and cities); people left unfinished by the paid-lookup limit or a SearchBug error are retried |
 
-The Google Sheet gets only Case Ids it does not have yet. To process everything again from scratch, delete
+The Google Sheet gets only people (first name + last name + crash date) it does not have yet. To process everything again from scratch, delete
 the stage's files in `data/<stage>/`.
 
 ### source_collection: raw items and finalizing

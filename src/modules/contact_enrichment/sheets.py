@@ -1,5 +1,5 @@
 """Send contacts.csv rows to a Google Sheet through a small Google Apps Script web app that you deploy
-from the sheet (apps_script.gs). The script appends only the people whose Case Id is not in the tab yet.
+from the sheet (apps_script.gs). The script appends only the people whose First Name + Last Name + Crash Date is not in the tab yet.
 
 Set in .env (the first two are needed; without them nothing here runs and the CSV/JSON files are the output):
   GOOGLE_SCRIPT_URL    the Web app URL from Deploy > New deployment (ends in /exec)

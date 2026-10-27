@@ -11,8 +11,8 @@
  *
  * The request is JSON: {token, tab, columns, rows}. The rows go to the tab named in "tab" (GOOGLE_SHEET_TAB
  * in .env), or to the first tab when that is empty. The tab must already exist: this script never creates
- * one. A row whose "Case Id" is already in the tab is skipped, so running a stage again never duplicates
- * a person. Values are placed under the tab's own header names, so the tab's column order can differ from the
+ * one. A row whose First Name + Last Name + Crash Date is already in the tab is skipped, so running a
+ * stage again never duplicates a person. Values are placed under the tab's own header names, so the tab's column order can differ from the
  * pipeline's, and a column the tab does not have is left out. An empty tab gets the pipeline's header first.
  * New cells are written as plain text, so phone numbers, dates and zip codes are not reformatted.
  */
@@ -39,17 +39,17 @@ function doPost(e) {
     }
 
     var header = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(String);
-    var incomingId = columns.indexOf('Case Id');
-    var sheetId = header.indexOf('Case Id');
+    var incomingKey = keyColumns(columns);
+    var sheetKey = keyColumns(header);
 
     var known = {};
-    if (sheetId >= 0 && sheet.getLastRow() > 1) {
-      sheet.getRange(2, sheetId + 1, sheet.getLastRow() - 1, 1).getValues()
-        .forEach(function (row) { known[String(row[0])] = true; });
+    if (sheetKey && sheet.getLastRow() > 1) {
+      sheet.getRange(2, 1, sheet.getLastRow() - 1, header.length).getValues()
+        .forEach(function (row) { known[personKey(row, sheetKey)] = true; });
     }
 
     var fresh = data.rows.filter(function (row) {
-      return incomingId < 0 || sheetId < 0 || !known[String(row[incomingId])];
+      return !incomingKey || !sheetKey || !known[personKey(row, incomingKey)];
     });
     if (fresh.length) {
       var order = header.map(function (name) { return columns.indexOf(name); });
@@ -66,6 +66,18 @@ function doPost(e) {
   } finally {
     lock.releaseLock();
   }
+}
+
+// A person is identified by First Name + Last Name + Crash Date (the sheet has no id column).
+var KEY_NAMES = ['First Name', 'Last Name', 'Crash Date'];
+
+function keyColumns(names) {
+  var at = KEY_NAMES.map(function (name) { return names.indexOf(name); });
+  return at.indexOf(-1) >= 0 ? null : at;
+}
+
+function personKey(row, at) {
+  return at.map(function (i) { return String(row[i]).trim().toLowerCase(); }).join('|');
 }
 
 function reply(body) {

@@ -158,7 +158,8 @@ def sandbox(tmp_path, monkeypatch):
     leads = tmp_path / "verified_leads.json"
     leads.write_text(json.dumps({"leads": [
         {"incident_id": "inc-1", "verdict": "qualifies", "crash_date": "2026-09-12", "crash_location": "Highway 99, Fresno",
-         "deceased": [{"name": "Maria Lopez", "age": 34, "residence": "Fresno"}], "sources": ["https://a.com/1"]},
+         "deceased": [{"name": "Maria Lopez", "age": 34, "residence": "Fresno", "at_fault": "no",
+                        "fault_source_url": "https://a.com/fault"}], "sources": ["https://a.com/1"]},
         {"incident_id": "inc-2", "verdict": "does_not_qualify", "deceased": [{"name": "Not Looked Up", "age": 50}]},
         {"incident_id": "inc-3", "verdict": "qualifies", "crash_date": "2026-09-20", "crash_location": "Oakland",
          "deceased": [{"name": "Sam Doe", "age": 40}]},
@@ -207,8 +208,8 @@ def test_stage_writes_json_and_csv_and_reuses_the_cache(sandbox):
     rows = list(csv.DictReader((sandbox / "contact_enrichment" / "contacts.csv").open(encoding="utf-8-sig")))
     assert [(r["First Name"], r["Last Name"]) for r in rows] == [("Maria", "Lopez"), ("Sam", "Doe")]  # one row each
     assert list(rows[0]) == [
-        "Sr.#", "Case Id", "First Name", "Last Name", "Crash Date", "Address", "Town", "County", "ST", "Zip",
-        "Phone1", "Phone2", "Age", "Incident Location", "Match Status",
+        "Sr.#", "First Name", "Last Name", "Crash Date", "Incident Location", "Match Status", "At Fault", "Proof",
+        "Age", "Address", "Town", "County", "ST", "Zip", "Phone1", "Phone2",
         "Next of Kin 1 Name", "Next of Kin 1 Relationship", "Next of Kin 1 Address", "Next of Kin 1 Phones",
         "Next of Kin 2 Name", "Next of Kin 2 Relationship", "Next of Kin 2 Address", "Next of Kin 2 Phones"]
     maria_row = rows[0]
@@ -216,6 +217,8 @@ def test_stage_writes_json_and_csv_and_reuses_the_cache(sandbox):
     assert (maria_row["Address"], maria_row["Town"], maria_row["ST"], maria_row["Zip"]) == ("12 Elm St", "FRESNO", "CA", "93701")
     assert maria_row["Phone1"] == "5595550101 (Wireless)" and maria_row["Phone2"] == ""
     assert maria_row["Incident Location"] == "Highway 99, Fresno"
+    assert (maria_row["At Fault"], maria_row["Proof"]) == ("No", "https://a.com/fault")
+    assert (rows[1]["At Fault"], rows[1]["Proof"]) == ("Not established", "")
     assert (maria_row["Next of Kin 1 Name"], maria_row["Next of Kin 1 Relationship"]) == ("John Lopez", "husband")
     assert (maria_row["Next of Kin 2 Name"], maria_row["Next of Kin 2 Relationship"]) == ("Rosa Diaz", "mother")
     assert maria_row["Next of Kin 1 Phones"] == "5595550199 (Landline)"

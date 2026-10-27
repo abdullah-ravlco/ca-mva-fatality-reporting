@@ -4,8 +4,8 @@
 Input:  data/lead_verification/verified_leads.json  (verdict "qualifies")
         data/severity_screening/passed_leads.json   (article text: relationships named in the news)
 Output: data/contact_enrichment/contacts.json         - short: one entry per deceased person
-        data/contact_enrichment/contacts.csv          - one row per deceased person: case id, name, crash date, address, 2 phones,
-                                                        age, incident location, match status, then up to 2
+        data/contact_enrichment/contacts.csv          - one row per deceased person: name, crash date, incident location, match status,
+                                                        at fault, proof (article link), age, address, 2 phones, then up to 2
                                                         next of kin (closest first): name, relationship,
                                                         address, phones
         data/contact_enrichment/contacts_details.json - every candidate, match reasons, lookups made
@@ -221,6 +221,8 @@ def targets(leads):
                 "role": person.get("role"),
                 "at_fault": person.get("at_fault"),
                 "fault_explanation": person.get("fault_explanation"),
+                # the article that shows the fault finding: the person's own, else the one for the other party
+                "fault_source_url": person.get("fault_source_url") or lead.get("other_party_fault_source_url"),
             })
     return out
 
@@ -252,7 +254,8 @@ def other_locations(addresses, limit=3):
 def enrich(lookups, target, texts):
     """(short_entry, detail_entry) for one deceased person."""
     base = {key: target.get(key) for key in ("incident_id", "name", "age", "crash_date", "residence",
-                                             "crash_location", "role", "at_fault", "fault_explanation")}
+                                             "crash_location", "role", "at_fault", "fault_explanation",
+                                             "fault_source_url")}
     if not is_named(target["name"]):
         return dict(base, match=NO_NAME, deceased=None, relatives=[]), dict(base, match=NO_NAME)
 
@@ -290,12 +293,13 @@ def enrich(lookups, target, texts):
 # contacts.csv: one row per deceased person, then up to 2 next of kin (closest first).
 NEXT_OF_KIN_FIELDS = ["Name", "Relationship", "Address", "Phones"]
 CSV_COLUMNS = [
-    "Sr.#", "Case Id", "First Name", "Last Name", "Crash Date", "Address", "Town", "County", "ST", "Zip",
-    "Phone1", "Phone2", "Age", "Incident Location", "Match Status",
-] + [f"Next of Kin {i} {field}" for i in range(1, 3) for field in NEXT_OF_KIN_FIELDS]
+    "Sr.#", "First Name", "Last Name", "Crash Date", "Incident Location", "Match Status", "At Fault", "Proof",
+    "Age", "Address", "Town", "County", "ST", "Zip", "Phone1", "Phone2",
+] +[f"Next of Kin {i} {field}" for i in range(1, 3) for field in NEXT_OF_KIN_FIELDS]
 # People with no reported name: what is known about the crash, nothing to mail yet.
 UNNAMED_COLUMNS = ["#", "Death Date", "Age", "Age Range", "Residence", "Incident Location",
                    "Notes on accident and/or mailer recipient", "Match Status", "Incident ID"]
+AT_FAULT_LABELS = {"no": "No", "yes": "Yes"}
 CELL_SEPARATOR = " | "  # between several values in one cell
 NAME_SUFFIXES = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "v"}
 ROLE_WORDS = {"driver": "driver", "passenger": "passenger", "pedestrian": "pedestrian", "cyclist": "cyclist",
@@ -349,10 +353,11 @@ def csv_rows(entries):
         first, last = first_last(entry.get("name"))
         row = {
             "Sr.#": number,
-            "Case Id": entry.get("incident_id"),
             "First Name": first,
             "Last Name": last,
             "Crash Date": entry.get("crash_date"),
+            "At Fault": AT_FAULT_LABELS.get(entry.get("at_fault"), "Not established"),
+            "Proof": entry.get("fault_source_url"),
             "Address": deceased.get("street"),
             "Town": deceased.get("town"),
             "County": deceased.get("county"),
