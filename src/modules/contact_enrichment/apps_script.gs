@@ -11,7 +11,7 @@
  *
  * The request is JSON: {token, tab, columns, rows}. The rows go to the tab named in "tab" (GOOGLE_SHEET_TAB
  * in .env), or to the first tab when that is empty. The tab must already exist: this script never creates
- * one. A row whose "Incident ID" is already in the tab is skipped, so running a stage again never duplicates
+ * one. A row whose "Case Id" is already in the tab is skipped, so running a stage again never duplicates
  * a person. Values are placed under the tab's own header names, so the tab's column order can differ from the
  * pipeline's, and a column the tab does not have is left out. An empty tab gets the pipeline's header first.
  * New cells are written as plain text, so phone numbers, dates and zip codes are not reformatted.
@@ -39,8 +39,8 @@ function doPost(e) {
     }
 
     var header = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(String);
-    var incomingId = columns.indexOf('Incident ID');
-    var sheetId = header.indexOf('Incident ID');
+    var incomingId = columns.indexOf('Case Id');
+    var sheetId = header.indexOf('Case Id');
 
     var known = {};
     if (sheetId >= 0 && sheet.getLastRow() > 1) {

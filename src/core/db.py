@@ -187,6 +187,12 @@ def get(key, default=None):
     return row[0] if row else default
 
 
+def get_with_time(key):
+    """(data, updated_at) of one document, or None when there is no such document."""
+    row = _run("SELECT data, updated_at FROM documents WHERE key = %s", (key,)).fetchone()
+    return (row[0], row[1]) if row else None
+
+
 def keys(prefix=""):
     return [row[0] for row in _run("SELECT key FROM documents WHERE key LIKE %s ORDER BY key", (prefix + "%",)).fetchall()]
 

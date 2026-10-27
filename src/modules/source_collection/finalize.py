@@ -45,6 +45,14 @@ def remove_same_link(records):
     return unique, dropped
 
 
+def drop_known(records, known):
+    """(records, dropped_count): items whose link is already in `known` (the items of earlier runs).
+    A Google News link can only be compared after it is resolved, so it passes here."""
+    seen = {canonical_url(r.get("url")) for r in known}
+    kept = [r for r in records if is_google_news_url(r.get("url")) or canonical_url(r.get("url")) not in seen]
+    return kept, len(records) - len(kept)
+
+
 def _story_key(record):
     outlet = (record.get("source_name") or "").lower().removeprefix("www.").split(".")[0]
     return normalize_title(record.get("title")), outlet

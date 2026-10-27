@@ -1,5 +1,5 @@
 """Send contacts.csv rows to a Google Sheet through a small Google Apps Script web app that you deploy
-from the sheet (apps_script.gs). The script appends only the people whose Incident ID is not in the tab yet.
+from the sheet (apps_script.gs). The script appends only the people whose Case Id is not in the tab yet.
 
 Set in .env (the first two are needed; without them nothing here runs and the CSV/JSON files are the output):
   GOOGLE_SCRIPT_URL    the Web app URL from Deploy > New deployment (ends in /exec)
@@ -29,6 +29,8 @@ def enabled():
 def table(columns, rows):
     """One list per row, in column order; empty cells as ''."""
     return [["" if row.get(c) is None else str(row[c]) for c in columns] for row in rows]
+
+
 
 
 def publish(tab, columns, rows):

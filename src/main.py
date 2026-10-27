@@ -13,7 +13,8 @@ Runs the pipeline stages in order:
                           their relatives' names, relationships, addresses and phones
 
 Each stage reads the previous stage's file in data/<stage>/; every run is also kept
-in data/runs/<run_id>/. The run stops at the first stage that fails, so later stages
+in data/runs/<run_id>/. Runs are incremental: a stage's files keep the results of earlier runs and the
+stage works only on what is new (see "Incremental runs" in the README). The run stops at the first stage that fails, so later stages
 never run on stale input.
 
 Usage:

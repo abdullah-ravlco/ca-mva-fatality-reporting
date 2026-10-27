@@ -19,7 +19,7 @@ MODULE = "source_collection"
 REASONS = (
     "duplicate_links", "source_law_firm", "source_social_media", "source_aggregator", "not_on_topic",
     "outside_california", "published_before_window", "duplicate_story_google_copy",
-    "duplicate_links_after_resolution",
+    "duplicate_links_after_resolution", "already_collected",
 )
 
 

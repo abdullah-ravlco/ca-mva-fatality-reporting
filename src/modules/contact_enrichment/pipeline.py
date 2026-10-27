@@ -4,10 +4,10 @@
 Input:  data/lead_verification/verified_leads.json  (verdict "qualifies")
         data/severity_screening/passed_leads.json   (article text: relationships named in the news)
 Output: data/contact_enrichment/contacts.json         - short: one entry per deceased person
-        data/contact_enrichment/contacts.csv          - the team's mailer layout: one row per deceased person
-                                                        (name, death date, aliases, address, phones, age,
-                                                        locations, accident notes), then match status and
-                                                        up to 2 next of kin, closest first
+        data/contact_enrichment/contacts.csv          - one row per deceased person: case id, name, crash date, address, 2 phones,
+                                                        age, incident location, match status, then up to 2
+                                                        next of kin (closest first): name, relationship,
+                                                        address, phones
         data/contact_enrichment/contacts_details.json - every candidate, match reasons, lookups made
         data/contact_enrichment/searchbug_errors.json - every failed SearchBug call
 
@@ -31,6 +31,7 @@ import re
 from collections import Counter
 from datetime import datetime, timezone
 
+from config.settings import module_data_dir
 from src.core.logger import configure_logging
 from src.core.outputs import read_json, write_json_atomic, write_stage_csv, write_stage_json
 from src.modules.contact_enrichment import config, sheets
@@ -286,20 +287,12 @@ def enrich(lookups, target, texts):
                 relatives=relatives), detail
 
 
-# The team's mailer layout (one row per deceased person). Columns we have no source for yet
-# (Mailing Date, Children, Homeowner, Married, Net Worth, Income Range, Death Location, Been
-# Verified) stay empty for the team to fill. Our own columns follow, so every row can be traced.
-MAILER_COLUMNS = [
-    "#", "Mailing Date", "First Name", "Last Name", "Death Date", "Aliases", "Address", "Town", "County",
-    "ST", "Zip", "Phone1", "Phone2", "Phone3", "Age", "Age Range", "Children", "Gender", "Homeowner",
-    "Married", "Net Worth", "Income Range", "Residence", "Death Location", "Incident Location",
-    "Other Locations", "Notes on accident and/or mailer recipient", "Been Verified",
-]
+# contacts.csv: one row per deceased person, then up to 2 next of kin (closest first).
 NEXT_OF_KIN_FIELDS = ["Name", "Relationship", "Address", "Phones"]
-EXTRA_COLUMNS = ["Match Status", "Incident ID", "DOB", "Relatives on Record"] + [
-    f"Next of Kin {i} {field}" for i in range(1, config.MAX_RELATIVES + 1) for field in NEXT_OF_KIN_FIELDS
-]
-CSV_COLUMNS = MAILER_COLUMNS + EXTRA_COLUMNS
+CSV_COLUMNS = [
+    "Sr.#", "Case Id", "First Name", "Last Name", "Crash Date", "Address", "Town", "County", "ST", "Zip",
+    "Phone1", "Phone2", "Age", "Incident Location", "Match Status",
+] + [f"Next of Kin {i} {field}" for i in range(1, 3) for field in NEXT_OF_KIN_FIELDS]
 # People with no reported name: what is known about the crash, nothing to mail yet.
 UNNAMED_COLUMNS = ["#", "Death Date", "Age", "Age Range", "Residence", "Incident Location",
                    "Notes on accident and/or mailer recipient", "Match Status", "Incident ID"]
@@ -309,8 +302,12 @@ ROLE_WORDS = {"driver": "driver", "passenger": "passenger", "pedestrian": "pedes
               "motorcyclist": "motorcyclist", "other": "other", "unknown": "unknown"}
 
 
+def _phone(phone):
+    return f"{phone['number']} ({phone['type']})" if phone.get("type") else phone["number"]
+
+
 def _phones(phones):
-    return CELL_SEPARATOR.join(f"{p['number']} ({p['type']})" if p.get("type") else p["number"] for p in phones or [])
+    return CELL_SEPARATOR.join(_phone(p) for p in phones or [])
 
 
 def first_last(name):
@@ -326,11 +323,6 @@ def age_range(age):
         return None
     low = age // 10 * 10
     return f"{low}-{low + 9}"
-
-
-def gender_letter(value):
-    letter = (value or "").strip()[:1].upper()
-    return letter if letter in ("M", "F") else None
 
 
 def accident_notes(entry):
@@ -350,39 +342,29 @@ def accident_notes(entry):
 
 
 def csv_rows(entries):
-    """One row per deceased person in the team's mailer layout, then match status, incident id,
-    date of birth and the next of kin (closest first)."""
+    """One row per deceased person, then the next of kin (closest first)."""
     rows = []
     for number, entry in enumerate(entries, start=1):
         deceased = entry.get("deceased") or {}
-        phones = deceased.get("phones") or []
         first, last = first_last(entry.get("name"))
         row = {
-            "#": number,
+            "Sr.#": number,
+            "Case Id": entry.get("incident_id"),
             "First Name": first,
             "Last Name": last,
-            "Death Date": deceased.get("date_of_death") or entry.get("crash_date"),
-            "Aliases": "; ".join(deceased.get("aliases") or []),
+            "Crash Date": entry.get("crash_date"),
             "Address": deceased.get("street"),
             "Town": deceased.get("town"),
             "County": deceased.get("county"),
             "ST": deceased.get("state"),
             "Zip": deceased.get("zip"),
             "Age": entry.get("age"),
-            "Age Range": age_range(entry.get("age")),
-            "Gender": gender_letter(deceased.get("gender")),
-            "Residence": entry.get("residence"),
             "Incident Location": entry.get("crash_location"),
-            "Other Locations": "; ".join(deceased.get("other_locations") or []),
-            "Notes on accident and/or mailer recipient": accident_notes(entry),
             "Match Status": entry.get("match"),
-            "Incident ID": entry.get("incident_id"),
-            "DOB": deceased.get("dob"),
-            "Relatives on Record": entry.get("relatives_on_record", len(entry.get("relatives") or [])),
         }
-        for i, phone in enumerate(phones[:3], start=1):
-            row[f"Phone{i}"] = f"{phone['number']} ({phone['type']})" if phone.get("type") else phone["number"]
-        for i, relative in enumerate((entry.get("relatives") or [])[:config.MAX_RELATIVES], start=1):
+        for i, phone in enumerate((deceased.get("phones") or [])[:2], start=1):
+            row[f"Phone{i}"] = _phone(phone)
+        for i, relative in enumerate((entry.get("relatives") or [])[:2], start=1):
             row.update({
                 f"Next of Kin {i} Name": relative.get("name"),
                 f"Next of Kin {i} Relationship": relative.get("relationship"),
@@ -391,6 +373,21 @@ def csv_rows(entries):
             })
         rows.append(row)
     return rows
+
+
+def unnamed_rows(entries):
+    """One row per person with no reported name (UNNAMED_COLUMNS)."""
+    return [{
+        "#": number,
+        "Death Date": entry.get("crash_date"),
+        "Age": entry.get("age"),
+        "Age Range": age_range(entry.get("age")),
+        "Residence": entry.get("residence"),
+        "Incident Location": entry.get("crash_location"),
+        "Notes on accident and/or mailer recipient": accident_notes(entry),
+        "Match Status": entry.get("match"),
+        "Incident ID": entry.get("incident_id"),
+    } for number, entry in enumerate(entries, start=1)]
 
 
 def publish_to_sheet(entries):
@@ -413,7 +410,7 @@ def save(entries, details, errors):
     named = [e for e in entries if e.get("match") != NO_NAME]
     unnamed = [e for e in entries if e.get("match") == NO_NAME]
     write_stage_csv(config.MODULE, config.CSV_NAME, CSV_COLUMNS, csv_rows(named))
-    write_stage_csv(config.MODULE, config.UNNAMED_CSV_NAME, UNNAMED_COLUMNS, csv_rows(unnamed))
+    write_stage_csv(config.MODULE, config.UNNAMED_CSV_NAME, UNNAMED_COLUMNS, unnamed_rows(unnamed))
     write_stage_json(config.MODULE, config.DETAILS_NAME, {"run_at": now(), "people": details})
     return write_stage_json(config.MODULE, config.OUTPUT_NAME, {
         "run_at": now(),
@@ -429,16 +426,57 @@ def save(entries, details, errors):
     })
 
 
+RETRY_STATUSES = (SKIPPED_BUDGET, FAILED)  # not finished: looked up again on the next run
+
+
+def target_key(item):
+    return item.get("incident_id"), item.get("name")
+
+
+def target_fingerprint(target):
+    """Changes when what the search is based on changes (name, age, crash date, cities)."""
+    parts = [target.get("name"), target.get("age"), target.get("crash_date")] + list(target.get("cities") or [])
+    return hashlib.sha1("|".join(str(p) for p in parts).encode()).hexdigest()[:16]
+
+
+def earlier_results():
+    """(entries, details) by (incident_id, name) from the last output: people looked up in earlier runs."""
+    folder = module_data_dir(config.MODULE)
+    entries = {target_key(e): e for e in (read_json(folder / config.OUTPUT_NAME, default={}) or {}).get("people") or []
+               if isinstance(e, dict) and e.get("match") not in RETRY_STATUSES}
+    details = {target_key(d): d for d in (read_json(folder / config.DETAILS_NAME, default={}) or {}).get("people") or []
+               if isinstance(d, dict)}
+    return entries, details
+
+
 def main(client=None):
     data = read_json(config.LEADS_FILE)
     if not isinstance(data, dict) or not isinstance(data.get("leads"), list):
         raise FileNotFoundError(f"Leads file missing or invalid: {config.LEADS_FILE} (run lead_verification first)")
     passed = (read_json(config.PASSED_LEADS_FILE, default={}) or {}).get("leads") or []
     people = targets(data["leads"])
-    logger.info("Deceased people in qualified leads: %s", len(people))
-    if not people:
-        save([], [], [])
-        publish_to_sheet([])
+
+    # A person looked up in an earlier run is kept as it was; only new or changed people are searched.
+    earlier_entries, earlier_details = earlier_results()
+    results, pending = {}, []
+    for target in people:
+        key = target_key(target)
+        old = earlier_entries.get(key)
+        if old and old.get("input_fingerprint") == target_fingerprint(target):  # no fingerprint: saved by an older version
+            results[key] = (old, earlier_details.get(key) or old)
+        else:
+            pending.append(target)
+    logger.info("Deceased people in qualified leads: %s (%s to look up, %s already done in earlier runs)",
+                len(people), len(pending), len(people) - len(pending))
+
+    def current():
+        done = [results[target_key(t)] for t in people if target_key(t) in results]
+        return [e for e, _ in done], [d for _, d in done]
+
+    if not pending:
+        entries, details = current()
+        save(entries, details, [])
+        publish_to_sheet(entries)
         return True
 
     try:
@@ -448,9 +486,9 @@ def main(client=None):
         return False
 
     lookups = Lookups(client, config.MAX_LOOKUPS_PER_RUN)
-    entries, details, errors = [], [], []
-    for index, target in enumerate(people, start=1):
-        logger.info("[%s/%s] %s (%s)", index, len(people), target["name"] or "unnamed", target["incident_id"])
+    errors = []
+    for index, target in enumerate(pending, start=1):
+        logger.info("[%s/%s] %s (%s)", index, len(pending), target["name"] or "unnamed", target["incident_id"])
         try:
             entry, detail = enrich(lookups, target, article_texts(target["incident_id"], passed))
             logger.info("  match=%s relatives=%s", entry["match"], len(entry.get("relatives") or []))
@@ -462,14 +500,16 @@ def main(client=None):
             entry = detail = {"incident_id": target["incident_id"], "name": target["name"], "match": FAILED,
                               "error": error.to_dict()}
             errors.append(dict(error.to_dict(), incident_id=target["incident_id"], name=target["name"], at=now()))
-        entries.append(entry)
-        details.append(detail)
+        entry["input_fingerprint"] = target_fingerprint(target)
+        results[target_key(target)] = (entry, detail)
+        entries, details = current()
         save(entries, details, errors)
 
+    entries, details = current()
     logger.info("Contact enrichment done: %s (paid lookups this run: %s)",
                 dict(Counter(e["match"] for e in entries)), lookups.paid)
     publish_to_sheet(entries)
-    if errors and len(errors) == len(people):
+    if errors and len(errors) == len(pending):
         logger.error("Every SearchBug lookup failed; details in %s", config.ERRORS_NAME)
         return False
     return True

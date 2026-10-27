@@ -206,20 +206,20 @@ def test_stage_writes_json_and_csv_and_reuses_the_cache(sandbox):
 
     rows = list(csv.DictReader((sandbox / "contact_enrichment" / "contacts.csv").open(encoding="utf-8-sig")))
     assert [(r["First Name"], r["Last Name"]) for r in rows] == [("Maria", "Lopez"), ("Sam", "Doe")]  # one row each
+    assert list(rows[0]) == [
+        "Sr.#", "Case Id", "First Name", "Last Name", "Crash Date", "Address", "Town", "County", "ST", "Zip",
+        "Phone1", "Phone2", "Age", "Incident Location", "Match Status",
+        "Next of Kin 1 Name", "Next of Kin 1 Relationship", "Next of Kin 1 Address", "Next of Kin 1 Phones",
+        "Next of Kin 2 Name", "Next of Kin 2 Relationship", "Next of Kin 2 Address", "Next of Kin 2 Phones"]
     maria_row = rows[0]
-    assert maria_row["#"] == "1" and maria_row["Death Date"] == "2026-09-12" and maria_row["Age Range"] == "30-39"
+    assert maria_row["Sr.#"] == "1" and maria_row["Crash Date"] == "2026-09-12" and maria_row["Match Status"] == "matched"
     assert (maria_row["Address"], maria_row["Town"], maria_row["ST"], maria_row["Zip"]) == ("12 Elm St", "FRESNO", "CA", "93701")
-    assert maria_row["Phone1"] == "5595550101 (Wireless)" and maria_row["Phone3"] == ""
-    assert maria_row["Other Locations"] == "MADERA, CA" and maria_row["Incident Location"] == "Highway 99, Fresno"
-    assert maria_row["Notes on accident and/or mailer recipient"].startswith("Manner: Accident (MVA). Role:")
-    assert maria_row["Relatives on Record"] == "2" and maria_row["Match Status"] == "matched"
+    assert maria_row["Phone1"] == "5595550101 (Wireless)" and maria_row["Phone2"] == ""
+    assert maria_row["Incident Location"] == "Highway 99, Fresno"
     assert (maria_row["Next of Kin 1 Name"], maria_row["Next of Kin 1 Relationship"]) == ("John Lopez", "husband")
     assert (maria_row["Next of Kin 2 Name"], maria_row["Next of Kin 2 Relationship"]) == ("Rosa Diaz", "mother")
     assert maria_row["Next of Kin 1 Phones"] == "5595550199 (Landline)"
     assert rows[1]["Match Status"] == "not_found" and rows[1]["Next of Kin 1 Name"] == "" and rows[1]["Address"] == ""
-    assert "Next of Kin 3 Name" not in maria_row  # at most 2 next of kin
-    for column in ("Mailing Date", "Children", "Homeowner", "Married", "Net Worth", "Income Range", "Been Verified"):
-        assert column in maria_row  # the team's columns are all there, empty until filled
 
     paid = len(fake.calls)
     again = FakeSearchBug()
@@ -333,8 +333,7 @@ def test_possible_match_is_filled_in_but_keeps_its_status(sandbox):
     ce.main(Elsewhere())
     rows = list(csv.DictReader((sandbox / "contact_enrichment" / "contacts.csv").open(encoding="utf-8-sig")))
     maria = next(r for r in rows if r["Last Name"] == "Lopez")
-    assert maria["Match Status"] == "possible_match" and "Identity not confirmed" in maria["Notes on accident and/or mailer recipient"]
-    assert maria["DOB"] == "1992-03-04" and maria["Next of Kin 1 Name"] == "John Lopez"
+    assert maria["Match Status"] == "possible_match" and maria["Next of Kin 1 Name"] == "John Lopez"
     assert maria["Next of Kin 1 Phones"] == "5595550199 (Landline)"
 
 
@@ -344,11 +343,10 @@ def test_several_values_in_one_cell_are_separated_by_a_pipe():
 
 
 def test_mailer_helpers():
-    from src.modules.contact_enrichment.pipeline import accident_notes, age_range, first_last, gender_letter
+    from src.modules.contact_enrichment.pipeline import accident_notes, age_range, first_last
 
     assert first_last("Lucian Michael Piane III") == ("Lucian", "Piane")
     assert age_range(46) == "40-49" and age_range(None) is None
-    assert gender_letter("Male") == "M" and gender_letter(None) is None
     notes = accident_notes({"role": "passenger", "at_fault": "no", "match": "matched",
                             "fault_explanation": "No public source assigns fault; the rollover cause remained under investigation."})
     assert notes == ("Manner: Accident (MVA). Role: passenger. Not at fault (No public source assigns fault; "
@@ -418,6 +416,7 @@ def test_new_rows_are_posted_in_column_order_with_the_token(script):
     url, body = sent[0]
     assert url.endswith("/exec") and body["token"] == "secret" and body["tab"] == "Leads"
     assert body["columns"] == ["A", "B"] and body["rows"] == [["x", ""], ["5", "(559) 555-0101"]]
+
 
 
 @pytest.mark.parametrize("response, message", [

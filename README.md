@@ -68,7 +68,12 @@ each). A database that is down never stops a run: the problem is logged and the 
 ```bash
 python -m src.core.migrate_to_postgres --check   # test the connection, create the tables
 python -m src.core.migrate_to_postgres           # load the existing JSON files (safe to repeat)
+python -m src.core.restore_from_postgres         # data/ was deleted: write the JSON files back from the database
 ```
+
+`restore_from_postgres` only writes files that are missing (`--dry-run` lists them, `--overwrite` replaces existing
+ones, `--include-runs` also restores the per-run copies). Run it before the pipeline so the next run continues
+incrementally. CSV files, checkpoints and `fetch_cache.json` are not in the database and are rebuilt.
 
 Tests against a real Postgres run when `TEST_DATABASE_URL` is set (see `tests/test_postgres_tables.py`).
 
@@ -81,11 +86,29 @@ Tests against a real Postgres run when `TEST_DATABASE_URL` is set (see `tests/te
 | 3 | `incident_grouping` | `articles.json` (kept articles) | `incidents.json` (articles grouped per crash, candidate dates/locations, conflicts, uncertainties, grouping rationale) |
 | 4 | `severity_screening` | `incidents.json` | `screened_incidents.json` (per incident: status, tags, reasons, facts mapped from JEV's answers, JEV's raw answers under `jev.answers`), `passed_leads.json` (only the passed leads, with screening result and full article content), `screening_errors.json` (every failed JEV call), `unidentified_victims.csv` (incidents whose victim is not named, not passed on) |
 | 5 | `lead_verification` | `passed_leads.json` (only the leads that passed screening, with their full article content) | `verified_leads.json` (per incident: qualification verdict and reasons, incident facts, every person with name/age/residence/fault/impairment, quotes with `quote_verified`, agent log), `fetch_cache.json` |
-| 6 | `contact_enrichment` | `verified_leads.json` (verdict `qualifies`) | `contacts.json` and `contacts.csv` (the team's mailer layout, one row per deceased person: name, death date, aliases, address, phones, age, locations, accident notes; then match status and up to 2 next of kin, closest first: spouse, children, parents, siblings, others) (per deceased person: match status, date of birth, last address, phones, relatives with relationship, address, phones), `contacts_details.json` (candidates, match reasons, lookups), `searchbug_errors.json`, `unnamed_people.csv` (deceased people with no reported name: not looked up, left out of `contacts.csv`) |
+| 6 | `contact_enrichment` | `verified_leads.json` (verdict `qualifies`) | `contacts.json` and `contacts.csv` (one row per deceased person: case id, name, crash date, address, 2 phones, age, incident location, match status; then up to 2 next of kin, closest first: name, relationship, address, phones) (per deceased person: match status, date of birth, last address, phones, relatives with relationship, address, phones), `contacts_details.json` (candidates, match reasons, lookups), `searchbug_errors.json`, `unnamed_people.csv` (deceased people with no reported name: not looked up, left out of `contacts.csv`) |
 
-**Google Sheet (optional).** With `GOOGLE_SCRIPT_URL` and `GOOGLE_SCRIPT_TOKEN` set in `.env`, `contact_enrichment` also sends `contacts.csv` to a Google Sheet through an Apps Script web app (`apps_script.gs`; its header explains the setup). Only people whose Incident ID is not in the tab yet are appended to an existing tab (`GOOGLE_SHEET_TAB`, default the first tab; the script never creates a tab), so a rerun never duplicates. A sheet problem is logged and never stops the run (`sheets.py`).
+**Google Sheet (optional).** With `GOOGLE_SCRIPT_URL` and `GOOGLE_SCRIPT_TOKEN` set in `.env`, `contact_enrichment` also sends `contacts.csv` to a Google Sheet through an Apps Script web app (`apps_script.gs`; its header explains the setup). Only people whose Case Id is not in the tab yet are appended to an existing tab (`GOOGLE_SHEET_TAB`, default the first tab; the script never creates a tab), so a rerun never duplicates. A sheet problem is logged and never stops the run (`sheets.py`).
 
 Every run is also kept in `data/runs/<run_id>/<stage>/`.
+
+### Incremental runs
+
+Every stage keeps what earlier runs produced and works only on what is new, so running on 1 Oct and
+again on 3 Oct gives one growing set of files, and the 1 Oct data is not read, fetched, screened or
+looked up again.
+
+| Stage | What accumulates | What is skipped on the next run |
+|---|---|---|
+| `source_collection` | `finalized_raw.json` gets the new items appended (`all_raw.json` stays this run's raw items; every run's copy is in `data/runs/`) | links already in `finalized_raw.json` (also saves the slow Google link lookups) |
+| `link_extraction` | `articles.json` and `extraction_errors.json` get the new records appended | items that already have an article record are not opened again (a failed or blocked fetch is not retried) |
+| `incident_grouping` | `incidents.json` is regrouped from all articles (deterministic, no LLM), because a new article may belong to an earlier crash; an incident keeps its `incident_id`. A new article that joins an earlier incident is discarded as a duplicate (listed under `discarded_duplicates`) unless it states something the incident lacks: a victim's name, an age, the case number, the date, the place, county or road, or readable text | nothing is re-decided by a model here |
+| `severity_screening` | `screened_incidents.json`, `passed_leads.json` | incidents whose articles did not change (fingerprint); a new article in an old incident screens that incident again |
+| `lead_verification` | `verified_leads.json` | incidents whose articles did not change (fingerprint) |
+| `contact_enrichment` | `contacts.json`, `contacts.csv`, `contacts_details.json` | people already looked up (same name, age, crash date and cities); people left unfinished by the paid-lookup limit or a SearchBug error are retried |
+
+The Google Sheet gets only Case Ids it does not have yet. To process everything again from scratch, delete
+the stage's files in `data/<stage>/`.
 
 ### source_collection: raw items and finalizing
 

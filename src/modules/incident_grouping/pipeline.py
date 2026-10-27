@@ -8,17 +8,24 @@ all articles regardless of the source-collection case they came from. Each incid
 keeps every supporting article (text, metadata, URLs), the candidate dates and
 locations each article gives, disagreements between articles, and what is still
 unknown. No LLM is used here.
+
+Articles accumulate from run to run, so each run groups all of them again (a new article may belong
+to an earlier crash). An incident keeps the id it had in the previous incidents.json. A new article that
+joins an earlier incident is discarded as a duplicate (listed under "discarded_duplicates") unless it
+states something new: a victim's name, an age, the date, the place... Then the incident is unchanged and
+the later stages skip it; with new information the incident gains the article and is screened again.
 """
 
 import hashlib
 import logging
+from collections import Counter
 
 from config.settings import module_data_dir
 from src.core.date_utils import iso, utc_now
 from src.core.logger import configure_logging
 from src.core.outputs import read_json, write_stage_json
 from src.modules.link_extraction.full_text_filter import KEEP
-from src.modules.source_collection.case_grouping import group_with_reasons, victim_ages, victim_types
+from src.modules.source_collection.case_grouping import facts, group_with_reasons, victim_ages, victim_types
 from src.modules.source_collection.location import CALIFORNIA_CONFIRMED
 
 MODULE = "incident_grouping"
@@ -49,6 +56,66 @@ def load_articles():
 def incident_id(members):
     keys = sorted(m.get("canonical_url") or m.get("url") or m["article_id"] for m in members)
     return "inc-" + hashlib.sha1("|".join(keys).encode()).hexdigest()[:12]
+
+
+def member_key(member):
+    return member.get("canonical_url") or member.get("url") or member["article_id"]
+
+
+def match_earlier(groups, earlier):
+    """For each group of articles, the earlier incident it grew out of (the one sharing the most
+    articles; an earlier incident is used once), or None for a new crash."""
+    owner, by_id = {}, {old["incident_id"]: old for old in earlier}
+    for old in earlier:
+        for member in old.get("articles") or []:
+            owner[member_key(member)] = old["incident_id"]
+    taken, matches = set(), []
+    for members, _ in groups:
+        votes = Counter(owner[k] for k in map(member_key, members) if k in owner)
+        old_id = next((i for i, _ in votes.most_common() if i not in taken), None)
+        taken.add(old_id)
+        matches.append(by_id.get(old_id))
+    return matches
+
+
+def new_information(member):
+    """What an article states that could change the lead: victim names, ages, case number, crash date,
+    place, county, road, and having readable text at all."""
+    f = facts(member)
+    info = {("name", n) for n in f["names"]} | {("age", a) for a in f["ages"]}
+    for field in ("case_number", "place", "county", "road"):
+        if f[field]:
+            info.add((field, f[field]))
+    if f["date"]:
+        info.add(("date", f["date"].date().isoformat() if hasattr(f["date"], "date") else str(f["date"])))
+    if member.get("text_available"):
+        info.add(("text", True))
+    return info
+
+
+def drop_duplicate_articles(members, old):
+    """(members, discarded): articles that join an earlier incident are dropped unless they state
+    something the incident did not have yet (a victim's name, age, date, place...). The incident then
+    stays exactly as it was and is not screened or verified again."""
+    earlier_keys = {member_key(m) for m in old.get("articles") or []}
+    kept = [m for m in members if member_key(m) in earlier_keys]
+    if not kept:
+        return members, []
+    known = set().union(*(new_information(m) for m in kept))
+    discarded = []
+    for member in members:
+        if member_key(member) in earlier_keys:
+            continue
+        fresh = new_information(member) - known
+        if fresh:
+            known |= fresh
+        else:
+            discarded.append({
+                "article_id": member.get("article_id"), "url": member.get("url"), "title": member.get("title"),
+                "incident_id": old["incident_id"], "reason": "adds nothing new to an incident from an earlier run",
+            })
+    skip = {d["article_id"] for d in discarded}
+    return [m for m in members if m.get("article_id") not in skip], discarded
 
 
 def candidate_dates(members):
@@ -142,7 +209,20 @@ def main():
     articles, total = load_articles()
     logger.info("Articles kept by the full-text filter: %s of %s", len(articles), total)
 
-    incidents = [incident_record(members, rationale) for members, rationale in group_with_reasons(articles)]
+    earlier = [i for i in (read_json(module_data_dir(MODULE) / INCIDENTS_FILE, default={}) or {}).get("incidents") or []
+               if i.get("incident_id")]
+    groups = group_with_reasons(articles)
+    incidents, discarded, grown = [], [], 0
+    for (members, rationale), old in zip(groups, match_earlier(groups, earlier)):
+        if old:
+            members, dropped = drop_duplicate_articles(members, old)
+            discarded += dropped
+        record = incident_record(members, rationale)
+        if old:  # same crash as an earlier run: same id, so the later stages recognise it
+            grown += record["incident_id"] != old["incident_id"]
+            record["incident_id"] = old["incident_id"]
+        incidents.append(record)
+    logger.info("%s incidents gained articles with new information; %s duplicate articles discarded", grown, len(discarded))
     incidents.sort(key=lambda i: max((d["date"] for d in i["candidate_incident_dates"] if d["date"]), default=""), reverse=True)
 
     path = write_stage_json(MODULE, INCIDENTS_FILE, {
@@ -154,7 +234,9 @@ def main():
             "incidents": len(incidents),
             "multi_article_incidents": sum(1 for i in incidents if i["article_count"] > 1),
             "incidents_without_text": sum(1 for i in incidents if not i["articles_with_text"]),
+            "duplicate_articles_discarded": len(discarded),
         },
+        "discarded_duplicates": discarded,
         "incidents": incidents,
     })
     logger.info("Incidents: %s (from %s articles) -> %s", len(incidents), len(articles), path)

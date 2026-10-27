@@ -4,6 +4,8 @@ re-check crash date / location / relevance on the full text.
 Input:  data/source_collection/finalized_raw.json (one article per item)
 Output: data/link_extraction/articles.json          - one record per article, every outcome
         data/link_extraction/extraction_errors.json - fetch/decode failures with diagnostics
+Both files grow: an item that already has an article record is not opened again, and each run adds
+the records of the items that are new since the last run.
 
 A page that is blocked (401/403, CAPTCHA) or otherwise fails is retried through
 the site's WordPress REST API (blocked pages only) and then the Wayback Machine.
@@ -364,8 +366,15 @@ CHECKPOINT_FILE = module_data_dir(MODULE) / "progress.jsonl"
 PARTIAL_EVERY = 50  # write articles.json (marked incomplete) after this many more articles
 
 
+def earlier_records():
+    """(articles, errors) saved by earlier runs; an interrupted run's finished articles count too."""
+    articles = (read_json(module_data_dir(MODULE) / ARTICLES_FILE, default={}) or {}).get("articles") or []
+    errors = read_json(module_data_dir(MODULE) / ERRORS_FILE, default=[]) or []
+    return [a for a in articles if isinstance(a, dict)], [e for e in errors if isinstance(e, dict)]
+
+
 def input_checkpoint(cases):
-    """Articles finished by an interrupted run on the same input, if any."""
+    """Articles finished by an interrupted run on the same input (the whole finalized_raw.json), if any."""
     urls = "|".join(sorted(case["open_first"] for case in cases))
     checkpoint = Checkpoint(CHECKPOINT_FILE, hashlib.sha1(urls.encode()).hexdigest())
     if checkpoint.items:
@@ -376,14 +385,17 @@ def input_checkpoint(cases):
 def main():
     now = reference_time()
     since = load_window_start()
-    cases = load_cases()
-    checkpoint = input_checkpoint(cases)
+    earlier_articles, earlier_errors = earlier_records()
+    done = {a.get("case_id") for a in earlier_articles}
+    all_cases = load_cases()
+    cases = [case for case in all_cases if case["case_id"] not in done]
+    checkpoint = input_checkpoint(all_cases)  # same input as the interrupted run, even after its partial save
     attempts = {}  # publisher/official URL -> result; fetched at most once per run
     decoded = {}   # Google News URL -> (publisher URL, error); decoded at most once
-    all_articles, all_errors = [], []
+    new_articles, new_errors = [], []
 
     logger.info("Input file: %s", INPUT_FILE)
-    logger.info("Articles to open: %s", len(cases))
+    logger.info("Articles to open: %s new (%s already read in earlier runs)", len(cases), len(all_cases) - len(cases))
 
     def work(numbered_case):
         index, case = numbered_case
@@ -397,29 +409,30 @@ def main():
         return articles, errors
 
     for articles, errors in parallel_map(work, enumerate(cases, start=1), FETCH_WORKERS):  # input order
-        all_articles.extend(articles)
-        all_errors.extend(errors)
-        if len(all_articles) // PARTIAL_EVERY != (len(all_articles) - len(articles)) // PARTIAL_EVERY:
+        new_articles.extend(articles)
+        new_errors.extend(errors)
+        if len(new_articles) // PARTIAL_EVERY != (len(new_articles) - len(articles)) // PARTIAL_EVERY:
             write_stage_json(MODULE, ARTICLES_FILE, {
                 "run_at": iso(utc_now()), "input_file": str(INPUT_FILE), "complete": False,
-                "articles": all_articles,
+                "articles": earlier_articles + new_articles,
             })
 
+    all_articles = earlier_articles + new_articles
     fetch_counts = Counter(a["fetch_status"] for a in all_articles)
     decisions = Counter(a["filter_decision"] for a in all_articles)
     drop_reasons = Counter(r for a in all_articles if a["filter_decision"] != KEEP for r in a["filter_reasons"])
+    with_text = {a.get("case_id") for a in all_articles if a["text_available"]}
     summary = {
-        "cases": len(cases),
+        "cases": len(all_cases),
+        "new_cases": len(cases),
         "articles": len(all_articles),
+        "new_articles": len(new_articles),
         "unique_urls_fetched": len(attempts),
         "google_news_links_decoded": f"{sum(1 for t, _ in decoded.values() if t)}/{len(decoded)}",
         "by_fetch_status": dict(fetch_counts),
         "by_filter_decision": dict(decisions),
         "drop_reasons": dict(drop_reasons),
-        "cases_without_text": sum(
-            1 for case in cases
-            if not any(a["text_available"] for a in all_articles if a["case_id"] == case.get("case_id"))
-        ),
+        "cases_without_text": sum(1 for case in all_cases if case.get("case_id") not in with_text),
     }
 
     articles_file = write_stage_json(MODULE, ARTICLES_FILE, {
@@ -429,15 +442,15 @@ def main():
         "summary": summary,
         "articles": all_articles,
     })
-    errors_file = write_stage_json(MODULE, ERRORS_FILE, all_errors)
+    errors_file = write_stage_json(MODULE, ERRORS_FILE, earlier_errors + new_errors)
     checkpoint.clear()  # the real output is written; the next run starts fresh
 
     logger.info("EXTRACTION COMPLETE: %s", summary)
     logger.info("Articles: %s", articles_file)
     logger.info("Diagnostics: %s", errors_file)
 
-    if cases and not any(a["text_available"] for a in all_articles):
-        logger.error("No article text could be read for any case.")
+    if cases and not any(a["text_available"] for a in new_articles):
+        logger.error("No article text could be read for any new case.")
         return False
     return True
 

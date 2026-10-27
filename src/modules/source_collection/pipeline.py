@@ -1,10 +1,11 @@
 """Step 1: source collection. Run via src/main.py.
 
 Writes two files in data/source_collection/:
-  all_raw.json       - every item from RSS feeds, Google News and Tavily, unfiltered
+  all_raw.json       - every item from RSS feeds, Google News and Tavily, unfiltered (this run only)
   finalized_raw.json - after removing same-link duplicates, low-value sources, off-topic,
                        out-of-California and old stories; Google News links resolved to the
-                       publisher URL
+                       publisher URL. Each run APPENDS its new items to those of earlier runs, so
+                       the next stage can open only the ones it has not read yet.
 Every item has: published_date, source_name, title, url, description.
 """
 
@@ -16,9 +17,11 @@ from src.core.checkpoint import Checkpoint
 from src.core.date_utils import iso, reference_time, utc_now
 from src.core.http_client import HttpClient
 from src.core.logger import configure_logging
-from src.modules.source_collection.finalize import drop_google_twins, finalize, remove_same_link
+from src.modules.source_collection.finalize import drop_google_twins, drop_known, finalize, remove_same_link
 from src.modules.source_collection.history import build_entry, window_start, write_history
-from src.modules.source_collection.output_files import write_all_raw, write_finalized_raw
+from src.modules.source_collection.output_files import (
+    merge_finalized, previous_finalized, write_all_raw, write_finalized_raw,
+)
 from src.modules.source_collection.raw_collection import collect_rss, collect_tavily
 from src.modules.source_collection.resolve_links import resolve_google_links
 from src.modules.source_collection.sources import (
@@ -79,9 +82,12 @@ def main(since=None):
         checkpoint.clear()  # failed searches stay out of the checkpoint, so only they are retried
 
     finalized, dropped = finalize(all_raw, now, start)
+    earlier = previous_finalized()  # items of earlier runs: kept as they are, never collected twice
+    finalized, dropped["already_collected"] = drop_known(finalized, earlier)
     # Save the filtered items now, with the links as collected: if the slow link lookup below is
     # interrupted, stage 2 can already use this file, and the lookups done so far are cached.
-    write_finalized_raw(run_at, start, finalized, {"note": "links not resolved yet", **dropped})
+    write_finalized_raw(run_at, start, merge_finalized(earlier, finalized),
+                        {"note": "links not resolved yet", **dropped})
 
     # Publisher URLs instead of Google News redirects (all_raw.json keeps the collected link);
     # the same article found by two routes is now the same link.
@@ -91,7 +97,10 @@ def main(since=None):
     dropped["duplicate_links_after_resolution"] = len(same_after)
 
     entry = build_entry(run_at, len(all_raw), dropped, len(finalized), google_links)
-    finalized_file = write_finalized_raw(run_at, start, finalized, entry)
+    merged = merge_finalized(earlier, finalized)
+    entry["new_in_finalized_raw"] = len(merged) - len(earlier)
+    logger.info("finalized_raw.json: %s new items added to %s from earlier runs", entry["new_in_finalized_raw"], len(earlier))
+    finalized_file = write_finalized_raw(run_at, start, merged, entry)
     history_file = write_history(entry)
 
     logger.info("Run history: %s", entry)

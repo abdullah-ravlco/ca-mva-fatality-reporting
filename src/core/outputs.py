@@ -3,10 +3,13 @@
 data/runs/<run_id>/<module>/<file>  - kept for every run (history)
 data/<module>/<file>                - latest run; the input of the next stage
 
-The JSON files are always written and read here. When a database is configured (.env, see db.py),
-every JSON file under data/ is also copied to Postgres' documents table (key = its path relative to
-data/); the stage tables are filled separately after each stage (db_sync.py). A database that cannot
-be reached never stops a run: the copy is switched off for the rest of the run and a warning is logged.
+The JSON files are always written. When a database is configured (.env, see db.py), every JSON file
+under data/ is also copied to Postgres' documents table (key = its path relative to data/), and the
+database copy is what read_json returns: the results of earlier runs come from the database, so a
+deleted data/ folder loses nothing. The file is read instead when the database has no copy of it, when
+the file is newer than the copy (an earlier run could not reach the database), or when the database
+cannot be reached. The stage tables are filled separately after each stage (db_sync.py). A database that
+cannot be reached never stops a run: the copy is switched off for the rest of the run and a warning is logged.
 """
 
 import csv
@@ -103,8 +106,36 @@ def write_stage_csv(module, filename, columns, rows):
     return path
 
 
+FILE_NEWER_SECONDS = 5  # a file this much newer than its database copy wins (clock differences are smaller)
+
+
+def read_from_database(path):
+    """The database copy of a JSON file, or None to use the file (no database, no copy, file newer, or a failure)."""
+    key = db_key(path)
+    if not key:
+        return None
+    try:
+        row = db.get_with_time(key)
+    except Exception as error:
+        _copy_failed[0] = True
+        logger.warning("Database read switched off for this run (%s: %s). Reading the JSON files instead.",
+                       type(error).__name__, error)
+        return None
+    if row is None or row[0] is None:
+        return None
+    data, updated_at = row
+    if path.exists() and path.stat().st_mtime > updated_at.timestamp() + FILE_NEWER_SECONDS:
+        logger.warning("%s is newer than its database copy; reading the file (an earlier run could not "
+                       "reach the database). Load it with: python -m src.core.migrate_to_postgres", key)
+        return None
+    return data
+
+
 def read_json(path, default=None):
-    """File contents, or default when the file is missing, empty or not valid JSON."""
+    """The stored JSON (database copy first, see above), or default when there is none or it is empty."""
+    stored = read_from_database(path)
+    if stored is not None:
+        return stored
     if not path.exists():
         return default
     try:

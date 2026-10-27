@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -12,12 +13,16 @@ class FakeDb:
 
     def __init__(self):
         self.rows = {}
+        self.saved_at = datetime.now(timezone.utc) + timedelta(seconds=60)  # newer than any file written in the test
 
     def put(self, key, data):
         self.rows[key] = json.loads(json.dumps(data))
 
     def get(self, key, default=None):
         return self.rows.get(key, default)
+
+    def get_with_time(self, key):
+        return (self.rows[key], self.saved_at) if key in self.rows else None
 
 
 @pytest.fixture
@@ -30,6 +35,7 @@ def fake(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://example/mva")
     monkeypatch.setattr(db, "put", store.put)
     monkeypatch.setattr(db, "get", store.get)
+    monkeypatch.setattr(db, "get_with_time", store.get_with_time)
     monkeypatch.setattr(outputs, "_copy_failed", [False])
     return store
 
@@ -41,7 +47,37 @@ def test_stage_output_is_written_to_files_and_copied_to_postgres(fake, tmp_path)
         "severity_screening/out.json": {"a": 1},              # latest
     }
     assert json.loads(path.read_text()) == {"a": 1}             # the JSON file is still written
-    assert outputs.read_json(path) == {"a": 1}                  # and is what the stages read
+    assert outputs.read_json(path) == {"a": 1}
+
+
+def test_stages_read_the_database_copy_not_the_file(fake, tmp_path):
+    path = outputs.write_stage_json("m", "a.json", {"from": "run"})
+    path.write_text(json.dumps({"from": "file"}))                  # the file differs (older than the copy)
+    assert outputs.read_json(path) == {"from": "run"}              # the database wins
+    path.unlink()                                                  # data/ deleted: nothing is lost
+    assert outputs.read_json(path) == {"from": "run"}
+
+
+def test_the_file_is_read_when_the_database_has_no_copy_or_an_older_one(fake, tmp_path):
+    path = tmp_path / "m" / "b.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"only": "file"}))
+    assert outputs.read_json(path) == {"only": "file"}             # no copy in the database yet
+    fake.rows["m/b.json"] = {"only": "old copy"}
+    fake.saved_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    assert outputs.read_json(path) == {"only": "file"}             # the file is newer: a run could not reach the database
+
+
+def test_an_unreachable_database_falls_back_to_the_files(fake, tmp_path, monkeypatch):
+    path = tmp_path / "m" / "c.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"x": 1}))
+
+    def down(key):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(db, "get_with_time", down)
+    assert outputs.read_json(path) == {"x": 1} and outputs._copy_failed == [True]
 
 
 def test_a_database_failure_never_stops_writing_files(fake, tmp_path, monkeypatch):
