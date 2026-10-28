@@ -208,8 +208,8 @@ def test_stage_writes_json_and_csv_and_reuses_the_cache(sandbox):
     rows = list(csv.DictReader((sandbox / "contact_enrichment" / "contacts.csv").open(encoding="utf-8-sig")))
     assert [(r["First Name"], r["Last Name"]) for r in rows] == [("Maria", "Lopez"), ("Sam", "Doe")]  # one row each
     assert list(rows[0]) == [
-        "Sr.#", "First Name", "Last Name", "Crash Date", "Incident Location", "Match Status", "At Fault", "Proof",
-        "Age", "Address", "Town", "County", "ST", "Zip", "Phone1", "Phone2",
+        "Sr.#", "First Name", "Middle Name", "Last Name", "Crash Date", "Age", "Incident Location", "Match Status",
+        "At Fault", "Proof for at fault", "Address", "Town", "County", "ST", "Zip", "Phone1", "Phone2",
         "Next of Kin 1 Name", "Next of Kin 1 Relationship", "Next of Kin 1 Address", "Next of Kin 1 Phones",
         "Next of Kin 2 Name", "Next of Kin 2 Relationship", "Next of Kin 2 Address", "Next of Kin 2 Phones"]
     maria_row = rows[0]
@@ -217,8 +217,8 @@ def test_stage_writes_json_and_csv_and_reuses_the_cache(sandbox):
     assert (maria_row["Address"], maria_row["Town"], maria_row["ST"], maria_row["Zip"]) == ("12 Elm St", "FRESNO", "CA", "93701")
     assert maria_row["Phone1"] == "5595550101 (Wireless)" and maria_row["Phone2"] == ""
     assert maria_row["Incident Location"] == "Highway 99, Fresno"
-    assert (maria_row["At Fault"], maria_row["Proof"]) == ("No", "https://a.com/fault")
-    assert (rows[1]["At Fault"], rows[1]["Proof"]) == ("Not established", "")
+    assert (maria_row["At Fault"], maria_row["Proof for at fault"]) == ("No", "https://a.com/fault")
+    assert (rows[1]["At Fault"], rows[1]["Proof for at fault"]) == ("Not established", "")
     assert (maria_row["Next of Kin 1 Name"], maria_row["Next of Kin 1 Relationship"]) == ("John Lopez", "husband")
     assert (maria_row["Next of Kin 2 Name"], maria_row["Next of Kin 2 Relationship"]) == ("Rosa Diaz", "mother")
     assert maria_row["Next of Kin 1 Phones"] == "5595550199 (Landline)"
@@ -346,9 +346,10 @@ def test_several_values_in_one_cell_are_separated_by_a_pipe():
 
 
 def test_mailer_helpers():
-    from src.modules.contact_enrichment.pipeline import accident_notes, age_range, first_last
+    from src.modules.contact_enrichment.pipeline import accident_notes, age_range, first_last, name_parts
 
     assert first_last("Lucian Michael Piane III") == ("Lucian", "Piane")
+    assert name_parts("Lucian Michael Piane III") == ("Lucian", "Michael", "Piane")
     assert age_range(46) == "40-49" and age_range(None) is None
     notes = accident_notes({"role": "passenger", "at_fault": "no", "match": "matched",
                             "fault_explanation": "No public source assigns fault; the rollover cause remained under investigation."})

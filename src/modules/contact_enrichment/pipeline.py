@@ -221,8 +221,10 @@ def targets(leads):
                 "role": person.get("role"),
                 "at_fault": person.get("at_fault"),
                 "fault_explanation": person.get("fault_explanation"),
-                # the article that shows the fault finding: the person's own, else the one for the other party
-                "fault_source_url": person.get("fault_source_url") or lead.get("other_party_fault_source_url"),
+                # the article that shows the fault finding: the person's own, else the one for the other party,
+                # else the first article of the incident, so every row has a link to read
+                "fault_source_url": (person.get("fault_source_url") or lead.get("other_party_fault_source_url")
+                                     or next(iter(lead.get("sources") or []), None)),
             })
     return out
 
@@ -293,9 +295,9 @@ def enrich(lookups, target, texts):
 # contacts.csv: one row per deceased person, then up to 2 next of kin (closest first).
 NEXT_OF_KIN_FIELDS = ["Name", "Relationship", "Address", "Phones"]
 CSV_COLUMNS = [
-    "Sr.#", "First Name", "Last Name", "Crash Date", "Incident Location", "Match Status", "At Fault", "Proof",
-    "Age", "Address", "Town", "County", "ST", "Zip", "Phone1", "Phone2",
-] +[f"Next of Kin {i} {field}" for i in range(1, 3) for field in NEXT_OF_KIN_FIELDS]
+    "Sr.#", "First Name", "Middle Name", "Last Name", "Crash Date", "Age", "Incident Location", "Match Status",
+    "At Fault", "Proof for at fault", "Address", "Town", "County", "ST", "Zip", "Phone1", "Phone2",
+] + [f"Next of Kin {i} {field}" for i in range(1, 3) for field in NEXT_OF_KIN_FIELDS]
 # People with no reported name: what is known about the crash, nothing to mail yet.
 UNNAMED_COLUMNS = ["#", "Death Date", "Age", "Age Range", "Residence", "Incident Location",
                    "Notes on accident and/or mailer recipient", "Match Status", "Incident ID"]
@@ -319,6 +321,15 @@ def first_last(name):
     while len(words) > 2 and words[-1].lower().strip(",") in NAME_SUFFIXES:
         words = words[:-1]
     return (words[0], words[-1]) if len(words) >= 2 else ((words[0], None) if words else (None, None))
+
+
+def name_parts(name):
+    """(first, middle, last) of a full name; a suffix such as Jr. is dropped."""
+    first, last = first_last(name)
+    words = (name or "").split()
+    while len(words) > 2 and words[-1].lower().strip(",") in NAME_SUFFIXES:
+        words = words[:-1]
+    return first, (" ".join(words[1:-1]) or None), last
 
 
 def age_range(age):
@@ -350,14 +361,15 @@ def csv_rows(entries):
     rows = []
     for number, entry in enumerate(entries, start=1):
         deceased = entry.get("deceased") or {}
-        first, last = first_last(entry.get("name"))
+        first, middle, last = name_parts(entry.get("name"))
         row = {
             "Sr.#": number,
             "First Name": first,
+            "Middle Name": middle,
             "Last Name": last,
             "Crash Date": entry.get("crash_date"),
             "At Fault": AT_FAULT_LABELS.get(entry.get("at_fault"), "Not established"),
-            "Proof": entry.get("fault_source_url"),
+            "Proof for at fault": entry.get("fault_source_url"),
             "Address": deceased.get("street"),
             "Town": deceased.get("town"),
             "County": deceased.get("county"),
@@ -468,7 +480,9 @@ def main(client=None):
         key = target_key(target)
         old = earlier_entries.get(key)
         if old and old.get("input_fingerprint") == target_fingerprint(target):  # no fingerprint: saved by an older version
-            results[key] = (old, earlier_details.get(key) or old)
+            # the proof link is not part of the search, so it follows the current lead data
+            refreshed = {"fault_source_url": target.get("fault_source_url")}
+            results[key] = (dict(old, **refreshed), dict(earlier_details.get(key) or old, **refreshed))
         else:
             pending.append(target)
     logger.info("Deceased people in qualified leads: %s (%s to look up, %s already done in earlier runs)",

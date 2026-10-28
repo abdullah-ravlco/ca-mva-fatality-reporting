@@ -13,7 +13,9 @@
  * in .env), or to the first tab when that is empty. The tab must already exist: this script never creates
  * one. A row whose First Name + Last Name + Crash Date is already in the tab is skipped, so running a
  * stage again never duplicates a person. Values are placed under the tab's own header names, so the tab's column order can differ from the
- * pipeline's, and a column the tab does not have is left out. An empty tab gets the pipeline's header first.
+ * pipeline's. An empty tab gets the pipeline's header first. A column the tab does not have yet is inserted by
+ * the script itself (right after the column that precedes it in the pipeline's order), and an older header
+ * name is understood through HEADER_ALIASES, so the tab's headings never need editing by hand.
  * New cells are written as plain text, so phone numbers, dates and zip codes are not reformatted.
  */
 function doPost(e) {
@@ -38,6 +40,7 @@ function doPost(e) {
       sheet.setFrozenRows(1);
     }
 
+    addMissingColumns(sheet, columns);
     var header = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(String);
     var incomingKey = keyColumns(columns);
     var sheetKey = keyColumns(header);
@@ -52,7 +55,7 @@ function doPost(e) {
       return !incomingKey || !sheetKey || !known[personKey(row, incomingKey)];
     });
     if (fresh.length) {
-      var order = header.map(function (name) { return columns.indexOf(name); });
+      var order = header.map(function (name) { return columns.indexOf(canonical(name)); });
       var out = fresh.map(function (row) {
         return order.map(function (i) { return i >= 0 ? row[i] : ''; });
       });
@@ -66,6 +69,25 @@ function doPost(e) {
   } finally {
     lock.releaseLock();
   }
+}
+
+// Older header names the tab may still use -> the pipeline's current name.
+var HEADER_ALIASES = {'Proof': 'Proof for at fault'};
+
+function canonical(name) {
+  return HEADER_ALIASES[name] || name;
+}
+
+// Insert every pipeline column the tab lacks, next to the column before it in the pipeline's order.
+function addMissingColumns(sheet, columns) {
+  columns.forEach(function (name, i) {
+    var header = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(String).map(canonical);
+    if (header.indexOf(name) >= 0) { return; }
+    var after = i > 0 ? header.indexOf(columns[i - 1]) : -1;
+    var at = after >= 0 ? after + 1 : header.length;   // 0-based position of the new column
+    if (at === 0) { sheet.insertColumnBefore(1); } else { sheet.insertColumnAfter(at); }
+    sheet.getRange(1, at + 1).setValue(name).setFontWeight('bold');
+  });
 }
 
 // A person is identified by First Name + Last Name + Crash Date (the sheet has no id column).

@@ -13,3 +13,7 @@ logs/
 
 # Claude Code project settings (local only)
 .claude/
+
+# Local data snapshots and macOS metadata
+data-old*/
+.DS_Store
