@@ -11,6 +11,7 @@ the same every time and can be explained:
     - every deceased person was reported impaired        (deceased_impaired)
     - every deceased person was reported at fault        (deceased_at_fault)
     - outside California                                 (outside_california)
+    - the crash is more than MAX_CRASH_AGE_DAYS old      (crash_too_old)
     - the agent says it is not a road crash              (not_a_road_crash)
   qualifies when none of that applies, at least one deceased person is a possible claimant, and the
     sources show the other party caused the crash
@@ -21,7 +22,10 @@ the same every time and can be explained:
 Fault is whatever the sources report. It is not a legal determination.
 """
 
-from src.core.date_utils import parse_date
+from datetime import timedelta
+
+from config.settings import MAX_CRASH_AGE_DAYS
+from src.core.date_utils import parse_date, utc_now
 from src.modules.source_collection.location import OUTSIDE_CALIFORNIA, detect_location
 
 
@@ -60,6 +64,8 @@ def assess(result):
     crash_date = parse_date(incident.date.value)
     if crash_date is None:
         missing.append("crash date")
+    elif crash_date.date() < (utc_now() - timedelta(days=MAX_CRASH_AGE_DAYS)).date():
+        reasons.append("crash_too_old")
     if not place:
         missing.append("crash location")
 

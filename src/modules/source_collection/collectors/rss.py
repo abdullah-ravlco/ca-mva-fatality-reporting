@@ -163,7 +163,7 @@ def records_from_items(feed, entries, feed_title, now, since, fetcher, result):
         incident = find_incident_date(
             " ".join(p for p in (title, summary, story) if p), published_at, reference_day=now.astimezone(LOCAL_TZ).date()
         )
-        status, reasons = news_status(incident["incident_date"], location["location_status"], now, since)
+        status, reasons = news_status(incident["incident_date"], location["location_status"], now)
         if incident["incident_date_note"]:
             reasons.append(incident["incident_date_note"])
         if published_at is None:

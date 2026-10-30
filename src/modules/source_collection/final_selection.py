@@ -2,17 +2,18 @@
 """Split collected records into the final list to consider, a short review list,
 and discarded items (counted by reason, not saved).
 
-consider  - in-window California road death backed by an official record or a
-            crash date found in the story text
-review    - possibly relevant but not yet verified (crash date or cause unknown)
-discard   - known not to be needed (old crash, not a road death)
+consider  - California road death backed by an official record in the window, or a
+            story published in the window whose text gives a crash date at most
+            MAX_CRASH_AGE_DAYS old (incident grouping checks whether it is already known)
+review    - possibly relevant but not yet verified (crash date or cause unknown), including
+            follow-up stories that only say the crash happened earlier
+discard   - known not to be needed (crash older than MAX_CRASH_AGE_DAYS, not a road death)
 """
 
 from collections import Counter
 
-from src.modules.source_collection.incident_dates import NOTE_EARLIER
 from src.modules.source_collection.records import (
-    DATE_CONFLICT_REVIEW, DATE_UNKNOWN, INCIDENT_DATE_UNVERIFIED, INCIDENT_OUTSIDE_WINDOW,
+    DATE_CONFLICT_REVIEW, DATE_UNKNOWN, INCIDENT_DATE_UNVERIFIED, INCIDENT_TOO_OLD,
     RECENT, RECENT_LISTING_DATE, RECENT_LISTING_ONLY, REVIEW_LOCATION,
 )
 
@@ -43,13 +44,9 @@ def classify(record):
 
     # News (publisher RSS / Google News)
     if status == RECENT:
-        return CONSIDER, "crash date in story text is inside the window"
-    if status == INCIDENT_OUTSIDE_WINDOW:
-        return DISCARD, "crash happened before the window"
-    if status == INCIDENT_DATE_UNVERIFIED and record.get("incident_date_note_type") == NOTE_EARLIER:
-        # e.g. "arrest made in February crash": the story itself says it's old.
-        # Conflicting dates in the story are uncertain, not old: those go to review.
-        return DISCARD, "story says the crash happened earlier"
+        return CONSIDER, "story published in the window; crash date in its text is recent enough"
+    if status == INCIDENT_TOO_OLD:
+        return DISCARD, "crash is older than MAX_CRASH_AGE_DAYS"
     if status in (INCIDENT_DATE_UNVERIFIED, REVIEW_LOCATION, DATE_UNKNOWN, DATE_CONFLICT_REVIEW):
         return REVIEW, ", ".join(record.get("review_reasons") or [status])
     return REVIEW, f"unrecognized status: {status}"

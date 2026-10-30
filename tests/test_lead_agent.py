@@ -62,6 +62,11 @@ def test_single_vehicle_crash_does_not_qualify():
     assert result["verdict"] == "does_not_qualify" and "single_vehicle_no_other_party" in result["reasons"]
 
 
+def test_crash_older_than_the_age_limit_does_not_qualify():
+    result = assess(lead([victim()], date=fact("2019-03-02")))
+    assert result["verdict"] == "does_not_qualify" and result["reasons"] == ["crash_too_old"]
+
+
 def test_impaired_deceased_driver_does_not_qualify():
     result = assess(lead([victim(role="driver", impaired="yes")]))
     assert result["verdict"] == "does_not_qualify" and result["reasons"] == ["deceased_impaired"]

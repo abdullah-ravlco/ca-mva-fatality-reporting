@@ -159,7 +159,7 @@ def save(records):
             "and a deceased person who was not reported impaired or at fault. fault_unidentified = the "
             "same, except the other party's fault is not established. does_not_qualify = no death, "
             "no other party (single-vehicle), every deceased person impaired or at fault, not a road "
-            "crash, outside California or older than the window. needs_review = facts missing. "
+            "crash, outside California or more than MAX_CRASH_AGE_DAYS old. needs_review = facts missing. "
             "Fault and impairment are what the sources report, not a legal finding. Residence is "
             "only what a source states; home addresses are not searched for. quote_verified = the "
             "quote was found in the page it cites."

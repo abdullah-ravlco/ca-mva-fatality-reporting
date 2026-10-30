@@ -161,3 +161,31 @@ def test_stage3_second_run_keeps_the_incident_unchanged_when_the_new_article_add
     assert [a["article_id"] for a in out["incidents"][0]["articles"]] == ["a1"]
     assert [d["article_id"] for d in out["discarded_duplicates"]] == ["a2"]
     assert out["summary"]["duplicate_articles_discarded"] == 1
+
+
+def test_stage3_a_late_story_about_an_older_crash_joins_a_known_incident_or_makes_a_new_one(sandbox, monkeypatch):
+    # run 2 collects stories published after run 1 started; they describe crashes from before it
+    from src.modules.incident_grouping import pipeline as grouping
+
+    articles_file = sandbox / "articles.json"
+    monkeypatch.setattr(grouping, "INPUT_FILE", articles_file)
+    known = article(1, incident_date="2026-10-12", place="Fresno", road="Highway 99", filter_decision="keep",
+                    case_id="c1", title="Driver killed in crash on Highway 99 in Fresno",
+                    text="A driver was killed in a crash on Highway 99 in Fresno on Oct. 12, the CHP said.")
+    same_crash = dict(known, article_id="a2", canonical_url="https://x.com/2", url="https://x.com/2", case_id="c2",
+                      title="Fresno Highway 99 crash leaves driver dead")
+    unknown_crash = article(3, incident_date="2026-10-01", place="Bakersfield", road="Ming Avenue", filter_decision="keep",
+                            case_id="c3", title="Pedestrian killed on Ming Avenue in Bakersfield",
+                            text="A pedestrian was struck and killed on Ming Avenue in Bakersfield on Oct. 1, police said.")
+
+    def run(*records):
+        articles_file.write_text(json.dumps({"articles": list(records)}))
+        assert grouping.main() is True
+        return json.loads((sandbox / "incident_grouping" / "incidents.json").read_text())
+
+    first = run(known)["incidents"][0]["incident_id"]
+    out = run(known, same_crash, unknown_crash)
+    by_article = {a["article_id"]: i["incident_id"] for i in out["incidents"] for a in i["articles"]}
+    assert by_article["a1"] == first and "a2" not in by_article
+    assert [d["incident_id"] for d in out["discarded_duplicates"]] == [first]
+    assert by_article["a3"] != first

@@ -4,9 +4,11 @@ Source collection could often only read a headline (Google News links can't be
 opened there), so its crash-date and location checks were mostly "unknown". Here
 the same rules run on the article text:
 
-  drop - the text shows the crash is before the collection window, outside
-         California, happened earlier (follow-up story), or is not a fatal road crash
-  keep - everything else, including articles whose date/location stay unknown
+  drop - the text shows the crash is more than MAX_CRASH_AGE_DAYS old, outside
+         California, or is not a fatal road crash
+  keep - everything else, including articles whose date/location stay unknown, and
+         articles published in the window about an older crash (a follow-up story):
+         incident grouping matches them to an existing incident or makes a new one
 
 Articles that could not be fetched are judged on their RSS title/description only,
 so they are kept unless that metadata already rules them out.
@@ -15,9 +17,9 @@ so they are kept unless that metadata already rules them out.
 from src.core.date_utils import parse_date
 from src.modules.source_collection.collectors.rss import LOCATION_TEXT_CHARS
 from src.modules.source_collection.filters import looks_relevant
-from src.modules.source_collection.incident_dates import NOTE_EARLIER, find_incident_date
+from src.modules.source_collection.incident_dates import find_incident_date
 from src.modules.source_collection.location import CALIFORNIA_CONFIRMED, OUTSIDE_CALIFORNIA, detect_location
-from src.modules.source_collection.records import INCIDENT_OUTSIDE_WINDOW, news_status
+from src.modules.source_collection.records import INCIDENT_TOO_OLD, news_status
 
 KEEP = "keep"
 DROP = "drop"
@@ -39,7 +41,7 @@ def _official_facts(article):
     }
 
 
-def apply_full_text_filter(article, now, since):
+def apply_full_text_filter(article, now):
     """Add crash-date, location, status and filter_decision fields to one article record."""
     title = article.get("title") or ""
     text = article.get("text") or ""
@@ -61,15 +63,13 @@ def apply_full_text_filter(article, now, since):
                 incident_date_note_type=None,
             )
 
-    status, reasons = news_status(incident["incident_date"], location["location_status"], now, since)
+    status, reasons = news_status(incident["incident_date"], location["location_status"], now)
     if incident["incident_date_note"]:
         reasons.append(incident["incident_date_note"])
 
     drop_reasons = []
-    if status == INCIDENT_OUTSIDE_WINDOW:
-        drop_reasons.append("crash date in the article is before the collection window")
-    if incident["incident_date_note_type"] == NOTE_EARLIER:
-        drop_reasons.append("article says the crash happened earlier")
+    if status == INCIDENT_TOO_OLD:
+        drop_reasons.append("crash date in the article is more than MAX_CRASH_AGE_DAYS ago")
     if location["location_status"] == OUTSIDE_CALIFORNIA:
         drop_reasons.append(f"article places the crash outside California ({location['location_evidence']})")
     # Relevance is only re-judged on real article text; the headline already passed it.

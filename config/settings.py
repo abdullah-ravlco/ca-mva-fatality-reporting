@@ -21,6 +21,11 @@ LOGS_DIR = PROJECT_ROOT / "logs"
 # How far back the first run collects, when there is no earlier run and no --since.
 FIRST_RUN_LOOKBACK_DAYS = 7
 
+# Oldest crash a news story may describe and still be kept. The window only decides which stories
+# are fetched (by publication date); a story published in it about an older crash is kept, and
+# incident grouping matches it to an existing incident or makes a new one.
+MAX_CRASH_AGE_DAYS = 730
+
 
 def module_data_dir(module_name):
     """data/<module_name>."""

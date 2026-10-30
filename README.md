@@ -136,18 +136,26 @@ dropped for each reason, finalized, Google links resolved). The same entry is sa
 
 **Collection window.** There is no fixed lookback. A run collects from the start of the previous
 run (the latest entry in `run_history.json` that collected anything) up to now, and writes that
-start as `window_start` in `finalized_raw.json`, which `link_extraction` reads. With no history (the
-first run), it starts `FIRST_RUN_LOOKBACK_DAYS` (7) days back; change that number in
-`config/settings.py`. `python -m src.main --since 2026-10-01` overrides either start. Lead verification applies no date cutoff.
+start as `window_start` in `finalized_raw.json`. With no history (the first run), it starts
+`FIRST_RUN_LOOKBACK_DAYS` (7) days back; change that number in `config/settings.py`.
+`python -m src.main --since 2026-10-01` overrides either start.
+
+The window decides which news stories are collected (by publication date), not which crashes
+are kept. A story published in the window about an older crash (a crash on the 20th reported on
+the 25th, or a follow-up such as "arrest made in last week's crash") is kept, unless the crash is
+more than `MAX_CRASH_AGE_DAYS` (730) days old. Incident grouping then matches it to an existing
+incident (it is a duplicate unless it adds something new) or makes a new incident that goes
+through screening and verification. Lead verification also marks a crash older than
+`MAX_CRASH_AGE_DAYS` as `does_not_qualify` (`crash_too_old`). Coroner records still need a death
+date inside the window.
 
 ### What each stage decides
 
 - **Article deduplication** (stage 1) merges only copies of the same article: the same
   canonical URL, or a near-identical headline from the same publisher. Every query and feed
   that found an article is kept in `discovered_by_queries` / `discovered_by_sources`.
-- **Full-text filter** (stage 2) drops articles whose text puts the crash outside the
-  collection window or outside California, says it happened earlier, or does not describe a
-  fatal road crash. Undetermined articles are kept. Articles that could not be fetched keep
+- **Full-text filter** (stage 2) drops articles whose text puts the crash more than
+  `MAX_CRASH_AGE_DAYS` ago or outside California, or does not describe a fatal road crash. Undetermined articles are kept. Articles that could not be fetched keep
   their RSS data and stay in the output.
 - **Incident grouping** (stage 3) is deterministic. Records join one incident only when
   nothing conflicts (date, place, county, case number) and there is positive evidence

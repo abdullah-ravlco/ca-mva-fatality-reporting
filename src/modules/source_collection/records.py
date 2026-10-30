@@ -1,18 +1,21 @@
 
 """Builders for consistent source records, and the shared status rules."""
 
+from datetime import timedelta
+
+from config.settings import MAX_CRASH_AGE_DAYS
 from src.core.date_utils import is_recent, iso, parse_date
 from src.modules.source_collection.incident_dates import NOTE_EARLIER
 from src.modules.source_collection.location import CALIFORNIA_CONFIRMED, OUTSIDE_CALIFORNIA
 
 # Record statuses
-RECENT = "recent"                                    # incident date verified inside the window
+RECENT = "recent"                                    # incident date verified (news: within MAX_CRASH_AGE_DAYS)
 RECENT_LISTING_DATE = "recent_listing_date"          # official listing date recent, article undated
 RECENT_LISTING_ONLY = "recent_listing_only"          # official listing date recent, article not fetched
 DATE_UNKNOWN = "date_unknown"                        # official record without a usable date
 DATE_CONFLICT_REVIEW = "date_conflict_review"        # listing and article dates disagree
 INCIDENT_DATE_UNVERIFIED = "incident_date_unverified"  # story is recent, crash date not found
-INCIDENT_OUTSIDE_WINDOW = "incident_outside_window"    # story is recent, crash is older
+INCIDENT_TOO_OLD = "incident_too_old"                # story is recent, crash older than MAX_CRASH_AGE_DAYS
 REVIEW_LOCATION = "review_location"                  # crash date fine, California not confirmed
 
 # Source types whose status comes from the story text (see news_status).
@@ -78,29 +81,31 @@ def make_record(
 
 
 REASON_NO_DATE = "crash date not found in story text"
-REASON_OUTSIDE = "crash date is before the collection window"
+REASON_TOO_OLD = f"crash date is more than {MAX_CRASH_AGE_DAYS} days ago"
 REASON_LOCATION = "California location not confirmed"
-BASE_REASONS = {REASON_NO_DATE, REASON_OUTSIDE, REASON_LOCATION}
+BASE_REASONS = {REASON_NO_DATE, REASON_TOO_OLD, REASON_LOCATION}
 
 
-def news_status(incident_date, location_status, now, since):
+def news_status(incident_date, location_status, now):
     """(status, review_reasons) for a news record.
 
-    Publication inside the window does not prove the crash was: the incident date
-    found in the story text decides. Location problems are reported alongside.
+    The window only decides which stories are collected (by publication date). A story
+    published in it about an older crash is kept, unless the crash is more than
+    MAX_CRASH_AGE_DAYS old: incident grouping then matches it to an existing incident
+    or makes a new one. Location problems are reported alongside.
     """
     reasons = []
     if incident_date is None:
         reasons.append(REASON_NO_DATE)
-    elif not is_recent(incident_date, since, now=now, date_only=True):
-        reasons.append(REASON_OUTSIDE)
+    elif not is_recent(incident_date, now - timedelta(days=MAX_CRASH_AGE_DAYS), now=now, date_only=True):
+        reasons.append(REASON_TOO_OLD)
     if location_status != CALIFORNIA_CONFIRMED:
         reasons.append(REASON_LOCATION)
 
     if incident_date is None:
         status = INCIDENT_DATE_UNVERIFIED
-    elif REASON_OUTSIDE in reasons:
-        status = INCIDENT_OUTSIDE_WINDOW
+    elif REASON_TOO_OLD in reasons:
+        status = INCIDENT_TOO_OLD
     elif location_status != CALIFORNIA_CONFIRMED:
         status = REVIEW_LOCATION
     else:
@@ -108,7 +113,7 @@ def news_status(incident_date, location_status, now, since):
     return status, reasons
 
 
-def refresh_news_status(record, now, since):
+def refresh_news_status(record, now):
     """Recompute a news record's status after deduplication filled in details.
 
     Extra reasons (blocked page, "crash happened earlier" notes) are kept. A record
@@ -119,7 +124,7 @@ def refresh_news_status(record, now, since):
         return record
     says_earlier = record.get("incident_date_note_type") == NOTE_EARLIER
     incident_date = None if says_earlier else parse_date(record.get("incident_date"))
-    status, reasons = news_status(incident_date, record.get("location_status"), now, since)
+    status, reasons = news_status(incident_date, record.get("location_status"), now)
     extra = [r for r in record.get("review_reasons") or [] if r not in BASE_REASONS]
     record["status"] = status
     record["review_reasons"] = reasons + extra

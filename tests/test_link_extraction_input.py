@@ -5,7 +5,6 @@ from src.modules.link_extraction import pipeline
 from src.modules.link_extraction.full_text_filter import KEEP
 
 NOW = datetime(2026, 10, 14, 18, 0, tzinfo=timezone.utc)
-SINCE = datetime(2026, 10, 7, 18, 0, tzinfo=timezone.utc)  # the last run
 TEXT = "A motorcyclist was killed in a crash on Highway 99 in Fresno, California, the CHP said on Oct. 13. " * 4
 
 
@@ -29,7 +28,7 @@ def test_each_finalized_item_becomes_one_article(tmp_path, monkeypatch):
     cases = pipeline.load_cases()
     assert [c["open_first"] for c in cases] == ["https://ktla.com/a", "https://abc7.com/b"]
 
-    articles, errors = pipeline.process_case(cases[0], {}, {}, NOW, SINCE)
+    articles, errors = pipeline.process_case(cases[0], {}, {}, NOW)
     assert not errors and len(articles) == 1
     article = articles[0]
     assert article["publisher"] == "KTLA" and article["published_at"] == "2026-10-13T10:00:00+00:00"

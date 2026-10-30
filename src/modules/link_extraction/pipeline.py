@@ -20,7 +20,7 @@ from urllib.parse import urlsplit
 
 from config.settings import module_data_dir
 from src.core.checkpoint import Checkpoint
-from src.core.date_utils import iso, parse_date, reference_time, utc_now
+from src.core.date_utils import iso, reference_time, utc_now
 from src.core.logger import configure_logging
 from src.core.parallel import parallel_map
 from src.core.outputs import read_json, write_stage_json
@@ -94,14 +94,6 @@ def load_cases():
             }],
         })
     return cases
-
-
-def load_window_start():
-    """Where source collection's window started, as written to its output file."""
-    start = parse_date((read_json(INPUT_FILE) or {}).get("window_start"))
-    if start is None:
-        raise ValueError(f"{INPUT_FILE} has no window_start; run source_collection again.")
-    return start
 
 
 def normalize_url(url):
@@ -309,7 +301,7 @@ def error_entry(case, article, result):
     }
 
 
-def process_case(case, attempts, decoded, now, since):
+def process_case(case, attempts, decoded, now):
     """(articles, errors) for one case."""
     articles, errors = [], []
     seen = set()  # canonical URLs already handled in this case
@@ -327,14 +319,14 @@ def process_case(case, attempts, decoded, now, since):
                 fetch_status=OFFICIAL_ENTRY, text=article["description"],
                 text_available=bool(article["description"]), canonical_url=canonical_url(rss_url),
             )
-            articles.append(apply_full_text_filter(article, now, since))
+            articles.append(apply_full_text_filter(article, now))
             continue
 
         target, decode_error = resolve_url(rss_url, decoded)
         if target is None:
             article.update(fetch_status=DECODE_FAILED, error=decode_error)
             errors.append(error_entry(case, article, None))
-            articles.append(apply_full_text_filter(article, now, since))
+            articles.append(apply_full_text_filter(article, now))
             continue
         if target != rss_url and canonical_url(target) in seen:
             continue  # a Google link to an article already handled in this case
@@ -353,7 +345,7 @@ def process_case(case, attempts, decoded, now, since):
         else:
             logger.info("    [%s] %s", result["fetch_status"].upper(), result.get("error"))
             errors.append(error_entry(case, article, result))
-        articles.append(apply_full_text_filter(article, now, since))
+        articles.append(apply_full_text_filter(article, now))
 
     return articles, errors
 
@@ -384,7 +376,6 @@ def input_checkpoint(cases):
 
 def main():
     now = reference_time()
-    since = load_window_start()
     earlier_articles, earlier_errors = earlier_records()
     done = {a.get("case_id") for a in earlier_articles}
     all_cases = load_cases()
@@ -402,7 +393,7 @@ def main():
         done = checkpoint.get(case["case_id"])
         if done is not None:
             return done["articles"], done["errors"]
-        articles, errors = process_case(case, attempts, decoded, now, since)
+        articles, errors = process_case(case, attempts, decoded, now)
         checkpoint.add(case["case_id"], {"articles": articles, "errors": errors})
         logger.info("[%s/%s] %s: %s", index, len(cases), case.get("case_id"),
                     ", ".join(a["fetch_status"] or "?" for a in articles) or "no article")
