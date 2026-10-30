@@ -208,8 +208,8 @@ def test_stage_writes_json_and_csv_and_reuses_the_cache(sandbox):
     rows = list(csv.DictReader((sandbox / "contact_enrichment" / "contacts.csv").open(encoding="utf-8-sig")))
     assert [(r["First Name"], r["Last Name"]) for r in rows] == [("Maria", "Lopez"), ("Sam", "Doe")]  # one row each
     assert list(rows[0]) == [
-        "Sr.#", "First Name", "Middle Name", "Last Name", "Crash Date", "Age", "Incident Location", "Match Status",
-        "At Fault", "Proof for at fault", "Address", "Town", "County", "ST", "Zip", "Phone1", "Phone2",
+        "Sr.#", "First Name", "Middle Name", "Last Name", "Crash Date", "Age", "Gender", "Incident Location",
+        "Match Status", "At Fault", "Proof for at fault", "Article Publish Date", "Date Fetched", "Address", "Town", "County", "ST", "Zip", "Phone1", "Phone2",
         "Next of Kin 1 Name", "Next of Kin 1 Relationship", "Next of Kin 1 Address", "Next of Kin 1 Phones",
         "Next of Kin 2 Name", "Next of Kin 2 Relationship", "Next of Kin 2 Address", "Next of Kin 2 Phones"]
     maria_row = rows[0]
@@ -346,9 +346,18 @@ def test_several_values_in_one_cell_are_separated_by_a_pipe():
 
 
 def test_mailer_helpers():
-    from src.modules.contact_enrichment.pipeline import accident_notes, age_range, first_last, name_parts
+    from src.modules.contact_enrichment.pipeline import accident_notes, age_range, first_last, article_gender, name_article_date, name_parts
 
     assert first_last("Lucian Michael Piane III") == ("Lucian", "Piane")
+    articles = [{"text": "Pedro Gavarrete died.", "published_at": "2026-10-24T06:59:00+00:00"},
+                {"text": "Pedro Gavarrete was named.", "published_at": "2026-10-23T10:00:00+00:00"},
+                {"text": "A man died.", "published_at": "2026-10-22T10:00:00+00:00"}]
+    assert name_article_date("Pedro Gavarrete", articles) == "2026-10-23"
+    assert name_article_date("Sam Doe", articles) is None
+    assert article_gender(29, [{"text": "A 29-year-old man was killed."}]) == "M"
+    assert article_gender(48, [{"text": "a 48-year-old Sacramento woman died"}]) == "F"
+    assert article_gender(30, [{"text": "a 29-year-old man"}]) is None
+    assert article_gender(29, [{"text": "a 29-year-old man"}, {"text": "a 29-year-old woman"}]) is None
     assert name_parts("Lucian Michael Piane III") == ("Lucian", "Michael", "Piane")
     assert age_range(46) == "40-49" and age_range(None) is None
     notes = accident_notes({"role": "passenger", "at_fault": "no", "match": "matched",

@@ -229,6 +229,13 @@ def targets(leads):
     return out
 
 
+def incident_articles(incident_id, passed):
+    for lead in passed:
+        if lead.get("incident_id") == incident_id:
+            return lead.get("articles") or []
+    return []
+
+
 def article_texts(incident_id, passed):
     for lead in passed:
         if lead.get("incident_id") == incident_id:
@@ -295,8 +302,8 @@ def enrich(lookups, target, texts):
 # contacts.csv: one row per deceased person, then up to 2 next of kin (closest first).
 NEXT_OF_KIN_FIELDS = ["Name", "Relationship", "Address", "Phones"]
 CSV_COLUMNS = [
-    "Sr.#", "First Name", "Middle Name", "Last Name", "Crash Date", "Age", "Incident Location", "Match Status",
-    "At Fault", "Proof for at fault", "Address", "Town", "County", "ST", "Zip", "Phone1", "Phone2",
+    "Sr.#", "First Name", "Middle Name", "Last Name", "Crash Date", "Age", "Gender", "Incident Location",
+    "Match Status", "At Fault", "Proof for at fault", "Article Publish Date", "Date Fetched", "Address", "Town", "County", "ST", "Zip", "Phone1", "Phone2",
 ] + [f"Next of Kin {i} {field}" for i in range(1, 3) for field in NEXT_OF_KIN_FIELDS]
 # People with no reported name: what is known about the crash, nothing to mail yet.
 UNNAMED_COLUMNS = ["#", "Death Date", "Age", "Age Range", "Residence", "Incident Location",
@@ -330,6 +337,33 @@ def name_parts(name):
     while len(words) > 2 and words[-1].lower().strip(",") in NAME_SUFFIXES:
         words = words[:-1]
     return first, (" ".join(words[1:-1]) or None), last
+
+
+def name_article_date(name, articles):
+    """Publish date (YYYY-MM-DD) of the earliest article whose text names the person, else None."""
+    words = [w.lower() for w in (name_parts(name)[0], name_parts(name)[2]) if w]
+    if len(words) < 2:
+        return None
+    dates = []
+    for article in articles or []:
+        text = (article.get("text") or "").lower()
+        published = article.get("published_at_resolved") or article.get("published_at")
+        if published and all(re.search(rf"\b{re.escape(w)}\b", text) for w in words):
+            dates.append(str(published)[:10])
+    return min(dates) if dates else None
+
+
+GENDER_WORDS = {"man": "M", "male": "M", "boy": "M", "woman": "F", "female": "F", "girl": "F"}
+
+
+def article_gender(age, articles):
+    """'M' / 'F' from a phrase such as "29-year-old man" with the person's age, else None. Used only when
+    SearchBug gives no gender; skipped when the articles disagree."""
+    if not isinstance(age, int):
+        return None
+    pattern = re.compile(rf"\b{age}[- ]year[- ]old\s+(?:[\w-]+\s+){{0,2}}?({'|'.join(GENDER_WORDS)})\b", re.IGNORECASE)
+    found = {GENDER_WORDS[m.group(1).lower()] for a in articles or [] for m in pattern.finditer(a.get("text") or "")}
+    return found.pop() if len(found) == 1 else None
 
 
 def age_range(age):
@@ -370,6 +404,9 @@ def csv_rows(entries):
             "Crash Date": entry.get("crash_date"),
             "At Fault": AT_FAULT_LABELS.get(entry.get("at_fault"), "Not established"),
             "Proof for at fault": entry.get("fault_source_url"),
+            "Article Publish Date": entry.get("article_published"),
+            "Date Fetched": (entry.get("fetched_at") or "")[:10] or None,
+            "Gender": deceased.get("gender") or entry.get("article_gender"),
             "Address": deceased.get("street"),
             "Town": deceased.get("town"),
             "County": deceased.get("county"),
@@ -475,13 +512,17 @@ def main(client=None):
 
     # A person looked up in an earlier run is kept as it was; only new or changed people are searched.
     earlier_entries, earlier_details = earlier_results()
+    earlier_run_at = (read_json(config.OUTPUT_FILE, default={}) or {}).get("run_at")  # for entries saved before fetched_at
     results, pending = {}, []
     for target in people:
         key = target_key(target)
         old = earlier_entries.get(key)
         if old and old.get("input_fingerprint") == target_fingerprint(target):  # no fingerprint: saved by an older version
             # the proof link is not part of the search, so it follows the current lead data
-            refreshed = {"fault_source_url": target.get("fault_source_url")}
+            refreshed = {"fault_source_url": target.get("fault_source_url"),
+                         "article_published": name_article_date(target["name"], incident_articles(target["incident_id"], passed)),
+                         "article_gender": article_gender(target.get("age"), incident_articles(target["incident_id"], passed)),
+                         "fetched_at": old.get("fetched_at") or earlier_run_at}
             results[key] = (dict(old, **refreshed), dict(earlier_details.get(key) or old, **refreshed))
         else:
             pending.append(target)
@@ -520,6 +561,9 @@ def main(client=None):
                               "error": error.to_dict()}
             errors.append(dict(error.to_dict(), incident_id=target["incident_id"], name=target["name"], at=now()))
         entry["input_fingerprint"] = target_fingerprint(target)
+        entry["fetched_at"] = now()
+        entry["article_gender"] = article_gender(target.get("age"), incident_articles(target["incident_id"], passed))
+        entry["article_published"] = name_article_date(target["name"], incident_articles(target["incident_id"], passed))
         results[target_key(target)] = (entry, detail)
         entries, details = current()
         save(entries, details, errors)
